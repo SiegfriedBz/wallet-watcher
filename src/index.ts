@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { loadConfig } from "./config.js";
-import { generateWallets } from "./wallets.js";
+import { generateWallets } from "./generate-wallets.js";
 
 try {
 	process.loadEnvFile();
