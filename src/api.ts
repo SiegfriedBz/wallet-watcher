@@ -17,6 +17,7 @@ import {
 	getStoredBalance,
 	recordBroadcast,
 } from "./db.js";
+import { safeErrorMessage } from "./shared/errors.js";
 import { createWithdrawalRequestSchema } from "./shared/schemas.js";
 import type { Wallet } from "./shared/types.js";
 import type { SignedWithdrawal } from "./signer.js";
@@ -182,9 +183,7 @@ export const createApi = ({
 		try {
 			txHash = await broadcastTransaction(signed.serializedTransaction);
 		} catch (error) {
-			console.error(
-				`[api] broadcast failed: ${error instanceof Error ? error.message : error}`,
-			);
+			console.error(`[api] broadcast failed: ${safeErrorMessage(error)}`);
 			return c.json({ error: "Broadcast failed, nothing was recorded" }, 502);
 		}
 
@@ -212,7 +211,7 @@ export const createApi = ({
 			return error.getResponse();
 		}
 		// Anything else: log the real error, return a generic message (no internals leak).
-		console.error(`[api] ${error.message}`);
+		console.error(`[api] ${safeErrorMessage(error)}`);
 		return c.json({ error: "Internal server error" }, 500);
 	});
 

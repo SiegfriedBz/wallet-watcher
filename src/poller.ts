@@ -9,6 +9,7 @@ import {
 	recordSettlement,
 } from "./db.js";
 import { settleWithdrawal } from "./settlement.js";
+import { safeErrorMessage } from "./shared/errors.js";
 import type { Wallet } from "./shared/types.js";
 
 // 8 minutes: any on-chain change is reflected within 10 minutes.
@@ -84,7 +85,7 @@ export const pollOnce = async (deps: PollerDeps) => {
 			}
 		} catch (error) {
 			console.error(
-				`[poller] wallet #${wallet.index}: ${error instanceof Error ? error.message : error}`,
+				`[poller] wallet #${wallet.index}: ${safeErrorMessage(error)}`,
 			);
 		}
 	}
