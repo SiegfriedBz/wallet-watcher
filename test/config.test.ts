@@ -71,7 +71,8 @@ describe("loadConfig", () => {
 	});
 
 	it("rejects an invalid MNEMONIC (wrong checksum)", () => {
-		const invalid = "test test test test test test test test test test test test";
+		const invalid =
+			"test test test test test test test test test test test test";
 		expect(() => loadConfig({ ...VALID_ENV, MNEMONIC: invalid })).toThrow(
 			/MNEMONIC/,
 		);
