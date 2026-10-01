@@ -1,11 +1,17 @@
 import { serve } from "@hono/node-server";
 import { z } from "zod";
 import { createApi } from "./api.js";
-import { CHAIN, createChainClient, readWithdrawalInputs } from "./chain.js";
+import {
+	assertExpectedChain,
+	CHAIN,
+	createChainClient,
+	readWithdrawalInputs,
+} from "./chain.js";
 import { loadConfig } from "./config.js";
 import { openDb } from "./db.js";
 import { generateWallets } from "./generate-wallets.js";
 import { startPoller } from "./poller.js";
+import { safeErrorMessage } from "./shared/errors.js";
 import { signWithdrawal } from "./signer.js";
 
 // One DB file per chain: balances from different networks can never mix.
@@ -23,8 +29,11 @@ try {
 		count: config.WALLET_COUNT,
 	});
 
-	const db = openDb(DB_PATH);
+	// Checked before anything else touches the chain or the DB.
 	const chainClient = createChainClient(config.RPC_URL);
+	await assertExpectedChain(chainClient);
+
+	const db = openDb(DB_PATH);
 
 	const poller = startPoller({ client: chainClient, db, wallets });
 	console.log(`✅ Watching ${wallets.length} wallets on ${CHAIN.name}`);
@@ -44,7 +53,6 @@ try {
 			signWithdrawal({ mnemonic: config.MNEMONIC, walletIndex, tx }),
 		broadcastTransaction: (serializedTransaction) =>
 			chainClient.sendRawTransaction({ serializedTransaction }),
-
 		logRequests: true,
 	});
 
@@ -66,7 +74,7 @@ try {
 	if (error instanceof z.ZodError) {
 		console.error(`Invalid input:\n${z.prettifyError(error)}`);
 	} else {
-		console.error(error instanceof Error ? error.message : error);
+		console.error(safeErrorMessage(error));
 	}
 	process.exit(1);
 }
