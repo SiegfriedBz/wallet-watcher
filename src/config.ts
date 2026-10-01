@@ -18,6 +18,11 @@ const EnvSchema = z.object({
 	WALLET_COUNT: DigitsString.pipe(WalletCountSchema),
 	RPC_URL: z.url(),
 	PORT: DigitsString.pipe(PortSchema).default(3000),
+	// Protects POST /withdrawals. Required: the service can always sign.
+	ADMIN_API_KEY: z.string().min(32, {
+		error:
+			"ADMIN_API_KEY must be at least 32 characters (openssl rand -hex 32)",
+	}),
 });
 
 export type Config = z.infer<typeof EnvSchema>;

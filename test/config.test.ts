@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
 
+// Test-only key, at least 32 characters.
+const TEST_API_KEY = "test-admin-key-0123456789abcdef-0123";
+
 // Public Hardhat/Anvil test mnemonic.
 const TEST_MNEMONIC =
 	"test test test test test test test test test test test junk";
@@ -9,6 +12,7 @@ const VALID_ENV = {
 	MNEMONIC: TEST_MNEMONIC,
 	WALLET_COUNT: "5",
 	RPC_URL: "https://sepolia.example.com",
+	ADMIN_API_KEY: TEST_API_KEY,
 };
 
 describe("loadConfig", () => {
@@ -18,12 +22,14 @@ describe("loadConfig", () => {
 			WALLET_COUNT: 5,
 			RPC_URL: "https://sepolia.example.com",
 			PORT: 3000,
+			ADMIN_API_KEY: TEST_API_KEY,
 		});
 	});
 
 	it("keeps only the expected keys (ignores other env vars)", () => {
 		const config = loadConfig({ ...VALID_ENV, HOME: "/home/someone" });
 		expect(Object.keys(config).sort()).toEqual([
+			"ADMIN_API_KEY",
 			"MNEMONIC",
 			"PORT",
 			"RPC_URL",
@@ -105,5 +111,26 @@ describe("loadConfig", () => {
 
 	it.each(["0", "65536", "abc", "80.5", ""])("rejects PORT = '%s'", (value) => {
 		expect(() => loadConfig({ ...VALID_ENV, PORT: value })).toThrow(/PORT/);
+	});
+
+	it("rejects a missing ADMIN_API_KEY", () => {
+		const { ADMIN_API_KEY: _omit, ...env } = VALID_ENV;
+		expect(() => loadConfig(env)).toThrow(/ADMIN_API_KEY/);
+	});
+
+	it("rejects an ADMIN_API_KEY shorter than 32 characters", () => {
+		expect(() =>
+			loadConfig({ ...VALID_ENV, ADMIN_API_KEY: "a".repeat(31) }),
+		).toThrow(/ADMIN_API_KEY/);
+	});
+
+	it("never puts the admin key in the error message", () => {
+		const shortKey = "short-secret-key";
+		try {
+			loadConfig({ ...VALID_ENV, ADMIN_API_KEY: shortKey });
+			expect.unreachable("loadConfig should have thrown");
+		} catch (error) {
+			expect((error as Error).message).not.toContain(shortKey);
+		}
 	});
 });
