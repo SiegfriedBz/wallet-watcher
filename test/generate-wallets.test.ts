@@ -81,7 +81,10 @@ describe("generateWallets", () => {
 	});
 
 	it.each([
-		["wrong checksum", "test test test test test test test test test test test test"],
+		[
+			"wrong checksum",
+			"test test test test test test test test test test test test",
+		],
 		["empty", ""],
 		["too short", "test test test"],
 	])("rejects an invalid mnemonic (%s)", (_label, mnemonic) => {
