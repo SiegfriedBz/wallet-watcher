@@ -7,10 +7,17 @@ const DigitsString = z
 	.regex(/^\d+$/, { error: "Must contain digits only" })
 	.transform(Number);
 
+const PortSchema = z
+	.number()
+	.int()
+	.min(1, { error: "Port must be at least 1" })
+	.max(65535, { error: "Port must be at most 65535" });
+
 const EnvSchema = z.object({
 	MNEMONIC: MnemonicSchema,
 	WALLET_COUNT: DigitsString.pipe(WalletCountSchema),
 	RPC_URL: z.url(),
+	PORT: DigitsString.pipe(PortSchema).default(3000),
 });
 
 export type Config = z.infer<typeof EnvSchema>;

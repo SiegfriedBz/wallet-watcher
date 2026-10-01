@@ -18,7 +18,9 @@
 	"license": "ISC",
 	"packageManager": "pnpm@10.24.0",
 	"dependencies": {
+		"@hono/node-server": "^2.1.3",
 		"@scure/bip39": "^2.4.0",
+		"hono": "^4.13.12",
 		"viem": "^2.57.1",
 		"zod": "^4.6.5"
 	},
