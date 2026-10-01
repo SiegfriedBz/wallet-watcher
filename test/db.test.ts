@@ -33,9 +33,9 @@ describe("db", () => {
 		});
 
 		expect(getStoredBalance(db, ADDRESS)).toBe(800n);
-		expect(getLedger(db, ADDRESS).map((r) => [r.type, r.delta_wei])).toEqual([
-			["initial", "500"],
-			["inflow", "300"],
+		expect(getLedger(db, ADDRESS).map((e) => [e.type, e.deltaWei])).toEqual([
+			["initial", 500n],
+			["inflow", 300n],
 		]);
 	});
 

@@ -12,18 +12,20 @@ const VALID_ENV = {
 };
 
 describe("loadConfig", () => {
-	it("accepts a valid env and turns WALLET_COUNT into a number", () => {
+	it("accepts a valid env, converts numbers, defaults PORT to 3000", () => {
 		expect(loadConfig(VALID_ENV)).toEqual({
 			MNEMONIC: TEST_MNEMONIC,
 			WALLET_COUNT: 5,
 			RPC_URL: "https://sepolia.example.com",
+			PORT: 3000,
 		});
 	});
 
-	it("keeps only the three expected keys (ignores other env vars)", () => {
+	it("keeps only the expected keys (ignores other env vars)", () => {
 		const config = loadConfig({ ...VALID_ENV, HOME: "/home/someone" });
 		expect(Object.keys(config).sort()).toEqual([
 			"MNEMONIC",
+			"PORT",
 			"RPC_URL",
 			"WALLET_COUNT",
 		]);
@@ -95,5 +97,13 @@ describe("loadConfig", () => {
 			expect((error as Error).message).not.toContain("jump");
 			expect((error as Error).message).not.toContain(secretLike);
 		}
+	});
+
+	it("accepts PORT = '8080'", () => {
+		expect(loadConfig({ ...VALID_ENV, PORT: "8080" }).PORT).toBe(8080);
+	});
+
+	it.each(["0", "65536", "abc", "80.5", ""])("rejects PORT = '%s'", (value) => {
+		expect(() => loadConfig({ ...VALID_ENV, PORT: value })).toThrow(/PORT/);
 	});
 });

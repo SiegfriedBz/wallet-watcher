@@ -4,7 +4,7 @@ import type { ChainClient } from "./chain.js";
 import { getStoredBalance, recordBalanceChange } from "./db.js";
 import type { Wallet } from "./shared/types.js";
 
-// 8 minutes: safely under the 10-minute requirement.
+// 8 minutes: any on-chain change is reflected within 10 minutes.
 export const POLL_INTERVAL_MS = 8 * 60 * 1000;
 
 type PollerDeps = {
@@ -43,14 +43,23 @@ export const pollOnce = async ({ client, db, wallets }: PollerDeps) => {
 	}
 };
 
+export type Poller = {
+	stop: () => void;
+	lastPolledAt: () => string | null;
+};
+
 // Polls now, then every POLL_INTERVAL_MS. The next round is scheduled only after
-// the current one finishes, so two rounds never overlap. Returns a stop function.
-export const startPoller = (deps: PollerDeps): (() => void) => {
+// the current one finishes, so two rounds never overlap.
+// lastPolledAt = start of the last finished round: every balance was read after it.
+export const startPoller = (deps: PollerDeps): Poller => {
 	let timer: NodeJS.Timeout | undefined;
 	let stopped = false;
+	let lastPolledAt: string | null = null;
 
 	const tick = async () => {
+		const startedAt = new Date().toISOString();
 		await pollOnce(deps);
+		lastPolledAt = startedAt;
 		if (!stopped) {
 			timer = setTimeout(tick, POLL_INTERVAL_MS);
 		}
@@ -58,8 +67,11 @@ export const startPoller = (deps: PollerDeps): (() => void) => {
 
 	void tick();
 
-	return () => {
-		stopped = true;
-		clearTimeout(timer);
+	return {
+		stop: () => {
+			stopped = true;
+			clearTimeout(timer);
+		},
+		lastPolledAt: () => lastPolledAt,
 	};
 };

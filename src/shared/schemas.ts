@@ -5,6 +5,8 @@ import { z } from "zod";
 export const MIN_WALLETS = 1;
 export const MAX_WALLETS = 20;
 
+// Checks the words AND the checksum, so a typo is caught at startup
+// instead of silently deriving the wrong wallets.
 export const MnemonicSchema = z
 	.string()
 	.trim()

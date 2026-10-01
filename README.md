@@ -1,6 +1,6 @@
 # Wallet Watcher
 
-A small custody-style backend in Node.js and TypeScript. It derives a set of Ethereum wallets from a single mnemonic, tracks their ETH balances on the **Sepolia testnet**, and records every balance change in an append-only ledger.
+A small custody-style backend in Node.js and TypeScript. It derives a set of Ethereum wallets from a single mnemonic, tracks their ETH balances on the **Sepolia testnet**, records every balance change in an append-only ledger, and exposes them through a small HTTP API.
 
 > Testnet only. Never use a mnemonic that holds real funds.
 
@@ -11,7 +11,7 @@ A small custody-style backend in Node.js and TypeScript. It derives a set of Eth
 | HD wallet derivation (1 to 20 wallets) | ✅ |
 | Balance tracking with an 8-minute poller | ✅ |
 | SQLite ledger + current balances | ✅ |
-| API: list wallets and balances | 🚧 planned |
+| API: list wallets and balances | ✅ |
 | Withdrawal: build and sign a transaction | 🚧 planned |
 | Withdrawal: broadcast and record the outflow | 🚧 planned |
 
@@ -35,6 +35,7 @@ Fill in `.env`:
 MNEMONIC="word1 word2 ... word12"
 WALLET_COUNT=5
 RPC_URL=https://eth-sepolia.g.alchemy.com/v2/<your-key>
+PORT=3000                   # optional, defaults to 3000
 ```
 
 Start the service:
@@ -48,11 +49,18 @@ pnpm start
   #0  0x5963…4Ed5
   #1  0x8c10…E873
   ...
+✅ API on http://127.0.0.1:3000
 [poller] wallet #0: initial 0 wei
 ...
 ```
 
-Send some Sepolia ETH to one of the printed addresses (from a faucet or another wallet). Within 8 minutes the service logs an `inflow`.
+In another terminal:
+
+```bash
+curl -s http://127.0.0.1:3000/wallets
+```
+
+Send some Sepolia ETH to one of the printed addresses (from a faucet or another wallet). Within 8 minutes the service logs an `inflow` and `/wallets` shows the new balance.
 
 ## Configuration
 
@@ -63,6 +71,44 @@ All settings come from `.env`. They are validated once at startup, and the servi
 | `MNEMONIC` | A valid 12- or 24-word BIP-39 phrase (checksum verified). Surrounding spaces are ignored. |
 | `WALLET_COUNT` | Digits only, integer from 1 to 20 (`"3.5"`, `"0x10"`, `" 7 "` are rejected). |
 | `RPC_URL` | A valid URL to a Sepolia node. |
+| `PORT` | Optional. Digits only, 1 to 65535. Default `3000`. |
+
+## API
+
+The API listens on `127.0.0.1` only: it is an admin tool, not reachable from other machines.
+
+| Method | Path | Returns |
+|---|---|---|
+| `GET` | `/wallets` | Every watched wallet with its balance |
+| `GET` | `/health` | `{ "status": "ok" }` |
+
+### `GET /wallets`
+
+```json
+{
+  "chainId": 11155111,
+  "lastPolledAt": "2026-10-01T17:10:02.114Z",
+  "wallets": [
+    {
+      "index": 0,
+      "address": "0x5963…4Ed5",
+      "balanceWei": "1000000000000000",
+      "balanceEth": "0.001",
+      "balanceChangedAt": "2026-10-01T12:38:09.393Z"
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `lastPolledAt` | Start of the last completed poll round: every balance was read on-chain after this time. `null` until the first round finishes. |
+| `balanceWei` / `balanceEth` | Balance as strings (JSON has no bigint; a JSON number would lose precision). `balanceEth` is for display. |
+| `balanceChangedAt` | When this wallet's balance last changed (not when it was last checked). |
+
+Balances are `null` for a wallet that has not been polled yet. Only wallets `0` to `WALLET_COUNT − 1` are listed.
+
+Errors return JSON: `404 { "error": "Not found" }`, `500 { "error": "Internal server error" }` (details are logged, never returned).
 
 ## How it works
 
@@ -80,6 +126,8 @@ Plain ETH transfers emit no on-chain events, so the service **polls** balances. 
 
 - A new round starts only after the previous one finished, so rounds never overlap.
 - An RPC error on one wallet is logged; the other wallets are still checked and the service keeps running.
+
+The API reads balances from the database, never from the chain: responses are fast, consistent with the ledger, and at most one poll interval old (`lastPolledAt` shows exactly how old).
 
 ### Storage
 
@@ -99,7 +147,7 @@ Both tables are written in a **single transaction**, so they always agree, even 
 | `outflow` | A withdrawal broadcast by this service (with its tx hash) |
 | `external_outflow` | Balance went down, but this service sent nothing |
 
-**Amounts** are handled as `bigint` wei in code and stored as decimal strings. A JavaScript `number` loses precision above 2⁵³ and SQLite integers stop at 2⁶³; strings never round.
+**Amounts** are `bigint` wei everywhere in the code. They become strings only at the edges: in the database (SQLite integers stop at 2⁶³) and in JSON (no bigint type). A JavaScript `number` would lose precision above 2⁵³; strings never round.
 
 ## Deposit handling
 
@@ -118,6 +166,7 @@ Per-deposit detail would require scanning blocks for transactions to the watched
 - The **mnemonic is the only secret**. It is read from `.env`, which is git-ignored, and is never logged or returned. Error messages never include input values.
 - **Private keys are never stored**: recomputed from the mnemonic on demand.
 - The balance-reading client has no key material and cannot sign.
+- The API listens on **localhost only**. Errors return a generic message; the request log contains method, path, status and duration, never bodies or headers.
 - **Testnet only.** In production, the mnemonic would live in a KMS or HSM, or be replaced by MPC signing.
 
 ## Design choices and trade-offs
@@ -127,13 +176,14 @@ Per-deposit detail would require scanning blocks for transactions to the watched
 | Ethereum Sepolia, native ETH | Worst-case fee is exactly `gasLimit × maxFeePerGas` | On an L2 (e.g. Base), an extra L1 data fee would need estimating |
 | Polling every 8 minutes | Simple, no third-party dependency, works after downtime | Deposits within one interval are merged; up to 8 minutes of delay |
 | SQLite via `node:sqlite` | Transactions, single local file, nothing to install | Node prints an `ExperimentalWarning` at startup |
+| API serves balances from the DB | Fast, consistent with the ledger, works if the RPC is down | Up to one poll interval old (shown by `lastPolledAt`) |
 | Withdrawals from each wallet directly | Keeps the scope small | In production, deposit wallets would be swept to a hot/cold wallet structure |
 
 ## Scripts
 
 | Command | What it does |
 |---|---|
-| `pnpm start` | Start the service |
+| `pnpm start` | Start the service (poller + API) |
 | `pnpm dev` | Start with auto-restart on file changes |
 | `pnpm test` | Run the unit tests (Vitest) |
 | `pnpm typecheck` | Type-check with `tsc` |
@@ -147,8 +197,9 @@ pnpm test
 ```
 
 - **Wallet generation**: known test vector (Hardhat's public mnemonic), determinism, adding and removing wallets, range limits, invalid mnemonics, no key material in the output.
-- **Config**: every accepted and rejected `WALLET_COUNT` format, missing values, the mnemonic never appearing in error messages.
+- **Config**: every accepted and rejected `WALLET_COUNT` and `PORT` format, missing values, the mnemonic never appearing in error messages.
 - **Balance tracking**: change detection, DB writes, precision above 2⁶³, rollback when a write fails.
+- **API**: wallet listing, `null` balances before the first poll, exact amounts (18 decimals), only watched wallets listed, `lastPolledAt`, health, JSON 404. Runs against an in-memory DB, with no server or network.
 
 CI (GitHub Actions) runs type-check, lint and tests on every pull request. No secrets are needed.
 
@@ -156,13 +207,14 @@ CI (GitHub Actions) runs type-check, lint and tests on every pull request. No se
 
 ```
 src/
-  index.ts             entry point: config → wallets → DB → poller
+  index.ts             entry point: config → wallets → DB → poller → API
   config.ts            env validation (zod)
   generate-wallets.ts  HD wallet derivation
-  chain.ts             read-only Sepolia client (viem)
+  chain.ts             network definition + read-only client (viem)
   balance-change.ts    compares stored and on-chain balances
   db.ts                SQLite schema and queries
   poller.ts            8-minute balance poller
+  api.ts               HTTP API (Hono)
   shared/              zod schemas and types
 scripts/
   generate-mnemonic.ts

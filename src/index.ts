@@ -1,13 +1,17 @@
-import { sepolia } from "viem/chains";
+import { serve } from "@hono/node-server";
 import { z } from "zod";
-import { createChainClient } from "./chain.js";
+import { createApi } from "./api.js";
+import { CHAIN, createChainClient } from "./chain.js";
 import { loadConfig } from "./config.js";
 import { openDb } from "./db.js";
 import { generateWallets } from "./generate-wallets.js";
 import { startPoller } from "./poller.js";
 
 // One DB file per chain: balances from different networks can never mix.
-const DB_PATH = `data/wallet-watcher-${sepolia.id}.db`;
+const DB_PATH = `data/wallet-watcher-${CHAIN.id}.db`;
+
+// Admin API: only reachable from this machine.
+const HOST = "127.0.0.1";
 
 try {
 	process.loadEnvFile();
@@ -19,16 +23,31 @@ try {
 	});
 
 	const db = openDb(DB_PATH);
-	const client = createChainClient(config.RPC_URL);
+	const chainClient = createChainClient(config.RPC_URL);
 
-	const stopPoller = startPoller({ client, db, wallets });
-	console.log(`✅ Watching ${wallets.length} wallets on Sepolia`);
+	const poller = startPoller({ client: chainClient, db, wallets });
+	console.log(`✅ Watching ${wallets.length} wallets on ${CHAIN.name}`);
 	for (const wallet of wallets) {
 		console.log(`  #${wallet.index}  ${wallet.address}`);
 	}
 
+	const app = createApi({
+		db,
+		wallets,
+		chainId: CHAIN.id,
+		getLastPolledAt: poller.lastPolledAt,
+		logRequests: true,
+	});
+
+	const server = serve(
+		{ fetch: app.fetch, hostname: HOST, port: config.PORT },
+		(info) => console.log(`✅ API on http://${HOST}:${info.port}`),
+	);
+
+	// Stop new work first (poller, HTTP), then close the DB they write to.
 	const shutdown = () => {
-		stopPoller();
+		poller.stop();
+		server.close();
 		db.close();
 		process.exit(0);
 	};
