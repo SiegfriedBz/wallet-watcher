@@ -8,6 +8,7 @@
 		"dev": "tsx watch src/index.ts",
 		"start": "tsx src/index.ts",
 		"typecheck": "tsc --noEmit",
+		"test": "vitest run",
 		"lint": "biome check .",
 		"lint:fix": "biome check --write .",
 		"generate:mnemonic": "tsx scripts/generate-mnemonic.ts"
@@ -25,6 +26,7 @@
 		"@biomejs/biome": "2.5.14",
 		"@types/node": "^24.19.0",
 		"tsx": "^4.23.15",
-		"typescript": "^7.0.2"
+		"typescript": "^7.0.2",
+		"vitest": "^5.0.3"
 	}
 }
