@@ -14,9 +14,14 @@ const WALLETS: Wallet[] = [
 ];
 
 // In-memory DB + app: no file, no port, no network.
-const setup = () => {
+const setup = (lastPolledAt: string | null = null) => {
 	const db = openDb(":memory:");
-	const app = createApi({ db, wallets: WALLETS, chainId: 11155111 });
+	const app = createApi({
+		db,
+		wallets: WALLETS,
+		chainId: 11155111,
+		getLastPolledAt: () => lastPolledAt,
+	});
 	return { db, app };
 };
 
@@ -28,20 +33,21 @@ describe("GET /wallets", () => {
 		expect(res.status).toBe(200);
 		expect(await res.json()).toEqual({
 			chainId: 11155111,
+			lastPolledAt: null,
 			wallets: [
 				{
 					index: 0,
 					address: ADDRESS_0,
 					balanceWei: null,
 					balanceEth: null,
-					updatedAt: null,
+					balanceChangedAt: null,
 				},
 				{
 					index: 1,
 					address: ADDRESS_1,
 					balanceWei: null,
 					balanceEth: null,
-					updatedAt: null,
+					balanceChangedAt: null,
 				},
 			],
 		});
@@ -64,7 +70,7 @@ describe("GET /wallets", () => {
 			address: ADDRESS_0,
 			balanceWei: "1234567890123456789",
 			balanceEth: "1.234567890123456789",
-			updatedAt: expect.any(String),
+			balanceChangedAt: expect.any(String),
 		});
 		expect(body.wallets[1].balanceWei).toBeNull();
 	});
@@ -82,6 +88,12 @@ describe("GET /wallets", () => {
 		const body = await (await app.request("/wallets")).json();
 
 		expect(body.wallets).toHaveLength(2);
+	});
+
+	it("returns the poller's last poll time", async () => {
+		const { app } = setup("2026-10-01T17:00:00.000Z");
+		const body = await (await app.request("/wallets")).json();
+		expect(body.lastPolledAt).toBe("2026-10-01T17:00:00.000Z");
 	});
 });
 

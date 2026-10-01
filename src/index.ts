@@ -25,13 +25,20 @@ try {
 	const db = openDb(DB_PATH);
 	const chainClient = createChainClient(config.RPC_URL);
 
-	const stopPoller = startPoller({ client: chainClient, db, wallets });
+	const poller = startPoller({ client: chainClient, db, wallets });
 	console.log(`✅ Watching ${wallets.length} wallets on ${CHAIN.name}`);
 	for (const wallet of wallets) {
 		console.log(`  #${wallet.index}  ${wallet.address}`);
 	}
 
-	const app = createApi({ db, wallets, chainId: CHAIN.id });
+	const app = createApi({
+		db,
+		wallets,
+		chainId: CHAIN.id,
+		getLastPolledAt: poller.lastPolledAt,
+		logRequests: true,
+	});
+
 	const server = serve(
 		{ fetch: app.fetch, hostname: HOST, port: config.PORT },
 		(info) => console.log(`✅ API on http://${HOST}:${info.port}`),
@@ -39,7 +46,7 @@ try {
 
 	// Stop new work first (poller, HTTP), then close the DB they write to.
 	const shutdown = () => {
-		stopPoller();
+		poller.stop();
 		server.close();
 		db.close();
 		process.exit(0);
