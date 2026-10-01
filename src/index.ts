@@ -1,11 +1,12 @@
 import { serve } from "@hono/node-server";
 import { z } from "zod";
 import { createApi } from "./api.js";
-import { CHAIN, createChainClient } from "./chain.js";
+import { CHAIN, createChainClient, readWithdrawalInputs } from "./chain.js";
 import { loadConfig } from "./config.js";
 import { openDb } from "./db.js";
 import { generateWallets } from "./generate-wallets.js";
 import { startPoller } from "./poller.js";
+import { signWithdrawal } from "./signer.js";
 
 // One DB file per chain: balances from different networks can never mix.
 const DB_PATH = `data/wallet-watcher-${CHAIN.id}.db`;
@@ -36,6 +37,11 @@ try {
 		wallets,
 		chainId: CHAIN.id,
 		getLastPolledAt: poller.lastPolledAt,
+		adminApiKey: config.ADMIN_API_KEY,
+		// The API gets functions, not the client or the mnemonic itself.
+		readWithdrawalInputs: (params) => readWithdrawalInputs(chainClient, params),
+		signWithdrawal: ({ walletIndex, tx }) =>
+			signWithdrawal({ mnemonic: config.MNEMONIC, walletIndex, tx }),
 		logRequests: true,
 	});
 
