@@ -1,8 +1,11 @@
 {
 	"name": "wallet-watcher",
 	"version": "1.0.0",
-	"description": "",
-	"main": "index.js",
+	"description": "Custody-style backend: HD wallets, balance tracking with a ledger, and signed ETH withdrawals on Sepolia",
+	"private": true,
+	"engines": {
+		"node": ">=22.13"
+	},
 	"type": "module",
 	"scripts": {
 		"dev": "tsx watch src/index.ts",

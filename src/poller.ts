@@ -1,7 +1,15 @@
 import type { DatabaseSync } from "node:sqlite";
+import { TransactionReceiptNotFoundError } from "viem";
 import { detectChange } from "./balance-change.js";
 import type { ChainClient } from "./chain.js";
-import { getStoredBalance, recordBalanceChange } from "./db.js";
+import {
+	getPendingWithdrawal,
+	getStoredBalance,
+	recordBalanceChange,
+	recordSettlement,
+} from "./db.js";
+import { settleWithdrawal } from "./settlement.js";
+import { safeErrorMessage } from "./shared/errors.js";
 import type { Wallet } from "./shared/types.js";
 
 // 8 minutes: any on-chain change is reflected within 10 minutes.
@@ -13,12 +21,52 @@ type PollerDeps = {
 	wallets: Wallet[];
 };
 
-// One round: read each wallet on-chain, record only what changed.
+// If the wallet has a withdrawal waiting to be mined, look for its receipt.
+// Mined → one ledger outflow with the real total. Not mined yet → next round.
+const settlePendingWithdrawal = async (
+	{ client, db }: PollerDeps,
+	wallet: Wallet,
+): Promise<void> => {
+	const pending = getPendingWithdrawal(db, wallet.address);
+	if (!pending) {
+		return;
+	}
+
+	const receipt = await client
+		.getTransactionReceipt({ hash: pending.txHash })
+		.catch((error) => {
+			if (error instanceof TransactionReceiptNotFoundError) {
+				return null; // not mined yet: normal
+			}
+			throw error; // real RPC error: logged by pollOnce
+		});
+	if (!receipt) {
+		return;
+	}
+
+	const settlement = settleWithdrawal(pending.valueWei, receipt);
+	recordSettlement(db, pending, settlement);
+	console.log(
+		`[poller] wallet #${wallet.index}: outflow ${settlement.deltaWei} wei (${settlement.status}, tx ${pending.txHash})`,
+	);
+};
+
+// One round, per wallet: settle a pending withdrawal first, then compare balances.
 // An error on one wallet is logged and does not stop the others.
-export const pollOnce = async ({ client, db, wallets }: PollerDeps) => {
+export const pollOnce = async (deps: PollerDeps) => {
+	const { client, db, wallets } = deps;
 	for (const wallet of wallets) {
 		try {
+			await settlePendingWithdrawal(deps, wallet);
+
 			const currentWei = await client.getBalance({ address: wallet.address });
+
+			// Still pending (or broadcast during the await above): the chain may not show
+			// the withdrawal yet, so comparing now would record a fake inflow. Next round.
+			if (getPendingWithdrawal(db, wallet.address)) {
+				continue;
+			}
+
 			const change = detectChange(
 				getStoredBalance(db, wallet.address),
 				currentWei,
@@ -37,7 +85,7 @@ export const pollOnce = async ({ client, db, wallets }: PollerDeps) => {
 			}
 		} catch (error) {
 			console.error(
-				`[poller] wallet #${wallet.index}: ${error instanceof Error ? error.message : error}`,
+				`[poller] wallet #${wallet.index}: ${safeErrorMessage(error)}`,
 			);
 		}
 	}

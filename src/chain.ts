@@ -46,3 +46,16 @@ export const readWithdrawalInputs = async (
 		maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
 	};
 };
+
+// Testnet only: refuse an RPC_URL that points to another network (e.g. mainnet).
+// eth_chainId asks the node itself, so a wrong URL is caught before anything runs.
+export const assertExpectedChain = async (
+	client: Pick<ChainClient, "getChainId">,
+): Promise<void> => {
+	const rpcChainId = await client.getChainId();
+	if (rpcChainId !== CHAIN.id) {
+		throw new Error(
+			`RPC_URL points to chain ${rpcChainId}, expected ${CHAIN.name} (${CHAIN.id}). Testnet only: refusing to start.`,
+		);
+	}
+};

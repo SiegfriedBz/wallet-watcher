@@ -6,10 +6,18 @@ import { logger } from "hono/logger";
 import {
 	type Address,
 	formatEther,
+	type Hash,
 	type TransactionSerializableEIP1559,
+	type TransactionSerializedEIP1559,
 } from "viem";
 import type { WithdrawalChainInputs } from "./chain.js";
-import { getBalances } from "./db.js";
+import {
+	getBalances,
+	getPendingWithdrawal,
+	getStoredBalance,
+	recordBroadcast,
+} from "./db.js";
+import { safeErrorMessage } from "./shared/errors.js";
 import { createWithdrawalRequestSchema } from "./shared/schemas.js";
 import type { Wallet } from "./shared/types.js";
 import type { SignedWithdrawal } from "./signer.js";
@@ -31,6 +39,9 @@ type ApiDeps = {
 		walletIndex: number;
 		tx: TransactionSerializableEIP1559;
 	}) => Promise<SignedWithdrawal>;
+	broadcastTransaction: (
+		serializedTransaction: TransactionSerializedEIP1559,
+	) => Promise<Hash>;
 	logRequests?: boolean;
 };
 
@@ -42,6 +53,7 @@ export const createApi = ({
 	adminApiKey,
 	readWithdrawalInputs,
 	signWithdrawal,
+	broadcastTransaction,
 	logRequests = false,
 }: ApiDeps) => {
 	const app = new Hono();
@@ -78,9 +90,9 @@ export const createApi = ({
 
 	const withdrawalRequestSchema = createWithdrawalRequestSchema(wallets.length);
 
-	// Builds and signs a withdrawal, without broadcasting it. Protected: anyone holding
-	// a signed tx can broadcast it. bearerAuth runs first (constant-time key check):
-	// without the right key, nothing below runs.
+	// Builds and signs a withdrawal; sends it only if broadcast: true. Protected: anyone
+	// holding a signed tx can broadcast it. bearerAuth runs first (constant-time key
+	// check): without the right key, nothing below runs.
 	app.post("/withdrawals", bearerAuth({ token: adminApiKey }), async (c) => {
 		const body = await c.req.json().catch(() => undefined);
 		const parsed = withdrawalRequestSchema.safeParse(body);
@@ -97,10 +109,28 @@ export const createApi = ({
 			);
 		}
 
-		const { fromIndex, to, amountWei } = parsed.data;
+		const { fromIndex, to, amountWei, broadcast } = parsed.data;
 		const from = wallets.find((w) => w.index === fromIndex)?.address;
 		if (!from) {
 			return c.json({ error: "Unknown wallet" }, 400);
+		}
+
+		if (broadcast) {
+			// One withdrawal in flight per wallet: simple settlement, no nonce race.
+			if (getPendingWithdrawal(db, from)) {
+				return c.json(
+					{ error: "This wallet already has a withdrawal waiting to be mined" },
+					409,
+				);
+			}
+			// The outflow is computed from the stored balance when mined, so the poller
+			// must have read this wallet at least once (seconds after startup).
+			if (getStoredBalance(db, from) === null) {
+				return c.json(
+					{ error: "Wallet not tracked yet, retry in a few seconds" },
+					409,
+				);
+			}
 		}
 
 		// Fresh on-chain state: the DB balance can be minutes old and must never decide a spend.
@@ -125,9 +155,7 @@ export const createApi = ({
 			tx: plan.tx,
 		});
 
-		// Built and signed only: nothing is broadcast, so nothing goes in the ledger.
-		return c.json({
-			broadcast: false,
+		const built = {
 			from: signed.from,
 			hash: signed.hash,
 			transaction: {
@@ -144,7 +172,35 @@ export const createApi = ({
 			},
 			signature: signed.signature,
 			serializedTransaction: signed.serializedTransaction,
+		};
+
+		// Built and signed only: nothing is sent, so nothing is recorded.
+		if (!broadcast) {
+			return c.json({ broadcast: false, ...built });
+		}
+
+		let txHash: Hash;
+		try {
+			txHash = await broadcastTransaction(signed.serializedTransaction);
+		} catch (error) {
+			console.error(`[api] broadcast failed: ${safeErrorMessage(error)}`);
+			return c.json({ error: "Broadcast failed, nothing was recorded" }, 502);
+		}
+
+		// Sent: recorded as pending. The ledger outflow (amount + real fee) is written
+		// by the poller once the tx is mined.
+		recordBroadcast(db, {
+			txHash,
+			walletIndex: fromIndex,
+			address: from,
+			to,
+			valueWei: amountWei,
 		});
+
+		return c.json(
+			{ broadcast: true, status: "pending", ...built, hash: txHash },
+			202,
+		);
 	});
 
 	app.notFound((c) => c.json({ error: "Not found" }, 404));
@@ -155,7 +211,7 @@ export const createApi = ({
 			return error.getResponse();
 		}
 		// Anything else: log the real error, return a generic message (no internals leak).
-		console.error(`[api] ${error.message}`);
+		console.error(`[api] ${safeErrorMessage(error)}`);
 		return c.json({ error: "Internal server error" }, 500);
 	});
 

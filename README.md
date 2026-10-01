@@ -1,8 +1,25 @@
 # Wallet Watcher
 
-A small custody-style backend in Node.js and TypeScript. It derives a set of Ethereum wallets from a single mnemonic, tracks their ETH balances on the **Sepolia testnet**, records every balance change in an append-only ledger, and builds and signs withdrawal transactions, all behind a small HTTP API.
+[![CI](https://github.com/SiegfriedBz/wallet-watcher/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/SiegfriedBz/wallet-watcher/actions/workflows/ci.yml)
+
+A small custody-style backend in Node.js and TypeScript, on the **Sepolia testnet**.
+
+- Derives a set of Ethereum wallets from a single mnemonic.
+- Tracks their ETH balances and records every change in an append-only ledger.
+- Builds and signs withdrawal transactions, and optionally broadcasts them.
+- Exposes all of it through a small HTTP API.
 
 > Testnet only. Never use a mnemonic that holds real funds.
+
+## What it does
+
+| Feature | How |
+|---|---|
+| **Wallet generation** | `WALLET_COUNT` wallets (1 to 20) derived from one mnemonic (BIP-44). Deterministic: the wallet at a given index is always the same. |
+| **Balance tracking** | Every wallet's balance is read on-chain at startup and every 8 minutes, and persisted in SQLite. Any on-chain change is reflected within 10 minutes. |
+| **Balance-change log** | An append-only ledger: inflows detected by tracking, outflows recorded only for withdrawals the service actually broadcast. |
+| **Withdrawals** | Build and sign a transaction from a selected wallet to any address. Returned as JSON (payload + signature), or broadcast and recorded as an outflow. |
+| **API** | `GET /wallets` (addresses and balances), `POST /withdrawals` (create, optionally broadcast; protected by an API key). |
 
 ## Status
 
@@ -13,7 +30,7 @@ A small custody-style backend in Node.js and TypeScript. It derives a set of Eth
 | SQLite ledger + current balances | ✅ |
 | API: list wallets and balances | ✅ |
 | Withdrawal: build and sign a transaction (protected) | ✅ |
-| Withdrawal: broadcast and record the outflow | 🚧 planned |
+| Withdrawal: broadcast and record the outflow | ✅ |
 
 ## Requirements
 
@@ -72,7 +89,7 @@ All settings come from `.env`. They are validated once at startup, and the servi
 |---|---|
 | `MNEMONIC` | A valid 12- or 24-word BIP-39 phrase (checksum verified). Surrounding spaces are ignored. |
 | `WALLET_COUNT` | Digits only, integer from 1 to 20 (`"3.5"`, `"0x10"`, `" 7 "` are rejected). |
-| `RPC_URL` | A valid URL to a Sepolia node. |
+| `RPC_URL` | A valid URL to a **Sepolia** node. Checked at startup (`eth_chainId`): the service refuses to start on any other network. |
 | `PORT` | Optional. Digits only, 1 to 65535. Default `3000`. |
 | `ADMIN_API_KEY` | Required, at least 32 characters. Protects `POST /withdrawals`. Generate with `openssl rand -hex 32`. |
 
@@ -84,7 +101,7 @@ The API listens on `127.0.0.1` only: it is an admin tool, not reachable from oth
 |---|---|---|---|
 | `GET` | `/health` | — | `{ "status": "ok" }` |
 | `GET` | `/wallets` | — | Every watched wallet with its balance |
-| `POST` | `/withdrawals` | `Bearer ADMIN_API_KEY` | A signed withdrawal transaction (not broadcast) |
+| `POST` | `/withdrawals` | `Bearer ADMIN_API_KEY` | A signed withdrawal transaction, optionally broadcast |
 
 All amounts in requests and responses are **strings**: JSON has no bigint type, and a JSON number would lose precision.
 
@@ -116,15 +133,23 @@ Only wallets `0` to `WALLET_COUNT − 1` are listed. Balances are read from the 
 
 ### `POST /withdrawals`
 
-Builds and signs a transaction sending ETH from one watched wallet to any address. **It does not broadcast it**, so nothing moves on-chain and nothing is written to the ledger.
+Builds and signs a transaction sending ETH from one watched wallet to any address. By default it is **not broadcast**: nothing moves on-chain and nothing is recorded. With `"broadcast": true`, the service also sends it (see [Broadcast and outflow recording](#broadcast-and-outflow-recording)).
 
 ```bash
 KEY=$(grep '^ADMIN_API_KEY=' .env | cut -d= -f2)
 
+# build and sign only
 curl -s -X POST http://127.0.0.1:3000/withdrawals \
   -H "Authorization: Bearer $KEY" \
   -H "Content-Type: application/json" \
   -d '{"fromIndex":0,"to":"0x8c10Cce599693f9D0c9c3C14B130f3137379E873","amountEth":"0.0005"}'
+
+# build, sign and broadcast
+curl -s -X POST http://127.0.0.1:3000/withdrawals \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"fromIndex":0,"to":"0x8c10Cce599693f9D0c9c3C14B130f3137379E873","amountEth":"0.0005","broadcast":true}'
+# then look up the returned hash on https://sepolia.etherscan.io/tx/<hash>
 ```
 
 **Request**
@@ -134,10 +159,11 @@ curl -s -X POST http://127.0.0.1:3000/withdrawals \
 | `fromIndex` | Integer, `0` to `WALLET_COUNT − 1`. Only watched wallets can send. |
 | `to` | An Ethereum address: lowercase, or correctly checksummed (a mixed-case typo is rejected). Not the zero address. |
 | `amountEth` | A **string** in ETH, e.g. `"0.0005"`. Digits with at most 18 decimals, greater than 0. No sign, no exponent, no JSON number. |
+| `broadcast` | Optional boolean, default `false`. `true` = also send the transaction. |
 
 Unknown fields are rejected.
 
-**Response `200`**
+**Response `200`** (not broadcast)
 
 ```json
 {
@@ -166,15 +192,19 @@ Unknown fields are rejected.
 | `transaction` | The transaction that was signed (the payload). `maxFeeWei` = `gas × maxFeePerGas`, the most the fee can be. |
 | `signature` | The ECDSA signature produced by the `from` wallet. Anyone can recover the signer's address from it. |
 | `serializedTransaction` | Transaction + signature, encoded (`0x02…` = EIP-1559). Ready to broadcast as-is. |
-| `hash` | The transaction id, as Etherscan will show it once broadcast. |
+| `hash` | The transaction id, as Etherscan shows it once broadcast. |
+
+**Response `202`** (`"broadcast": true`): the same body, with `"broadcast": true` and `"status": "pending"`. The transaction was sent; the ledger records the outflow once it is mined.
 
 **Errors**
 
 | Status | When | Body |
 |---|---|---|
 | `401` | Missing or wrong `Authorization` header. Nothing else runs. | — |
-| `400` | Invalid JSON or invalid fields | `{ "error": "Invalid request", "issues": [{ "field", "message" }] }` |
+| `400` | Invalid JSON or invalid fields. No chain call. | `{ "error": "Invalid request", "issues": [{ "field", "message" }] }` |
+| `409` | `broadcast: true`, but the wallet already has a withdrawal waiting to be mined, or has not been polled yet | `{ "error" }` |
 | `422` | Valid request, but the balance cannot cover amount + worst-case fee | `{ "error", "balanceWei", "maxFeeWei", "maxSendableWei", "maxSendableEth" }` |
+| `502` | `broadcast: true`, but sending failed. Nothing is recorded. | `{ "error" }` |
 | `500` | Unexpected error (e.g. RPC down). Details are logged, never returned. | `{ "error": "Internal server error" }` |
 
 ## How it works
@@ -203,27 +233,34 @@ A local SQLite file (`data/wallet-watcher-<chainId>.db`), so there is no databas
 | Table | Content |
 |---|---|
 | `balances` | One row per wallet: the current balance. Overwritten when it changes. |
-| `ledger` | One row per change, never edited or deleted: type, signed delta, balance after, tx hash (for withdrawals), timestamp. |
+| `ledger` | One row per balance change, never edited or deleted: type, signed delta, balance after, tx hash (for withdrawals), timestamp. |
+| `withdrawals` | One row per broadcast: tx hash, wallet, destination, amount, status (`pending` → `mined` / `reverted`), real fee. |
 
-Both tables are written in a **single transaction**, so they always agree, even after a crash.
+Writes that belong together (a balance and its ledger row; a settlement, its ledger row and the new balance) happen in a **single transaction**, so the tables always agree, even after a crash.
 
 | Ledger type | Meaning |
 |---|---|
 | `initial` | First reading of a wallet |
 | `inflow` | Balance went up |
-| `outflow` | A withdrawal broadcast by this service (with its tx hash) |
+| `outflow` | A withdrawal broadcast by this service, once mined: amount + real fee, with its tx hash |
 | `external_outflow` | Balance went down, but this service sent nothing |
+
+**Amounts** are `bigint` wei everywhere in the code. They are strings only at the edges: in requests (`amountEth`, converted exactly with `parseEther`), in the database, and in JSON responses. A JavaScript `number` would lose precision above 2⁵³; strings never round.
 
 ### Withdrawals
 
 ```
 POST /withdrawals
-  1. API key check (constant time)               → 401, nothing else runs
-  2. Validate the request                        → 400, no chain call
-  3. Read fresh from the chain: balance, nonce, fees, gas estimate
-  4. balance ≥ amount + gas × maxFeePerGas ?     → 422 with the max sendable amount
-  5. Derive the wallet's key, sign
-  6. Return the signed transaction (not broadcast, no ledger row)
+  1. API key check (constant time)                → 401, nothing else runs
+  2. Validate the request                         → 400, no chain call
+  3. broadcast only: one pending withdrawal per
+     wallet, wallet already polled                → 409
+  4. Read fresh from the chain: balance, nonce, fees, gas estimate
+  5. balance ≥ amount + gas × maxFeePerGas ?      → 422 with the max sendable amount
+  6. Derive the wallet's key, sign
+  7. not broadcast → 200, nothing recorded
+     broadcast     → send (502 if it fails, nothing recorded)
+                     → "pending" withdrawal recorded → 202
 ```
 
 - **Fresh chain state, never the database.** The stored balance can be minutes old; a spend is always decided on the current on-chain balance.
@@ -232,7 +269,25 @@ POST /withdrawals
 - **Nonce** is read with `blockTag: "pending"`, so a transaction still waiting to be mined is not reused.
 - **Signing**: the private key for that one wallet is derived from the mnemonic, used once, and dropped. Only the signed transaction and the signature leave the signer.
 
-**Amounts** are `bigint` wei everywhere in the code. They are strings only at the edges: in requests (`amountEth`, converted exactly with `parseEther`), in the database, and in JSON responses. A JavaScript `number` would lose precision above 2⁵³; strings never round.
+### Broadcast and outflow recording
+
+The real fee is only known once the transaction is mined, so a broadcast is recorded in two steps, linked by the tx hash:
+
+| When | What is written |
+|---|---|
+| At broadcast | A `withdrawals` row: `pending`, amount, tx hash. The ledger is not touched: the balance has not changed yet. |
+| At the next poll, once mined | In one transaction: status `mined` + real fee (`gasUsed × effectiveGasPrice`), **one** `outflow` ledger row of −(amount + fee), and the new balance. |
+
+While a wallet has a pending withdrawal, the poller does not compare its balance: the chain does not show the transaction yet, and comparing would record a fake inflow. Once settled, the stored balance equals the on-chain balance, so the drop is **never counted twice**.
+
+Example (Sepolia): sending 0.0005 ETH recorded one `outflow` of −0.000523183071527 ETH = 0.0005 + a real fee of 0.000023183071527, below the 0.000024728757984 worst case checked before signing. The receiving watched wallet recorded an `inflow` of exactly 0.0005.
+
+| Case | Behaviour |
+|---|---|
+| Sending fails | `502`, nothing recorded |
+| Crash between sending and recording (milliseconds) | The poller sees the drop and records `external_outflow`: the balance stays correct and the event is flagged |
+| Transaction reverted | `outflow` = −fee only (gas is paid, the amount stays), status `reverted` |
+| Deposit while a withdrawal is pending | Recorded as `inflow` right after the settlement |
 
 ## Deposit handling
 
@@ -249,12 +304,14 @@ Per-deposit detail would require scanning blocks for transactions to the watched
 ## Security
 
 - The **mnemonic is the only key material**. It is read from `.env`, which is git-ignored, and is never logged or returned. Error messages never include input values.
-- **Private keys are never stored**: derived for one wallet at signing time, then dropped. The HTTP layer never sees the mnemonic or the RPC client; it receives a "sign" function.
-- **`POST /withdrawals` is protected** by `ADMIN_API_KEY` (Bearer token, compared in constant time). A signed transaction can be broadcast by anyone who holds it, so building one is as sensitive as sending one.
+- **Private keys are never stored**: derived for one wallet at signing time, then dropped. The HTTP layer never sees the mnemonic or the RPC client; it receives "sign" and "broadcast" functions.
+- **`POST /withdrawals` is protected** by `ADMIN_API_KEY` (Bearer token, compared in constant time), even without broadcast: a signed transaction can be broadcast by anyone who holds it, so building one is as sensitive as sending one.
 - **Only watched wallets can send**, and the zero address is refused as a destination.
 - The API listens on **localhost only**. Errors return a generic message; the request log contains method, path, status and duration, never bodies or headers.
 - The balance-reading client has no key material and cannot sign.
-- **Testnet only.** In production: the mnemonic in a KMS/HSM or MPC signing, mTLS or an identity provider in front of the API, and per-withdrawal limits or approvals.
+- **Testnet enforced, not just documented**: at startup the service asks the RPC node for its chain id and refuses to start unless it is Sepolia.
+- **The RPC URL is never logged.** Providers like Alchemy put the API key in the URL, and RPC error messages include it; logs use the short error message only.
+- In production: the mnemonic in a KMS/HSM or MPC signing, mTLS or an identity provider in front of the API, and per-withdrawal limits or approvals.
 
 ## Design choices and trade-offs
 
@@ -267,8 +324,17 @@ Per-deposit detail would require scanning blocks for transactions to the watched
 | Withdrawals read the chain fresh | A stale balance must never decide a spend | One RPC round-trip per withdrawal |
 | Funds check on the worst-case fee | The network can never reject the tx for lack of funds | The last fraction of a balance cannot be sent while fees are high |
 | Amounts in ETH as strings | Readable, and exact (`parseEther`, max 18 decimals) | Callers must send a string, not a number |
+| Send recorded at broadcast, outflow at mining | One exact ledger row (amount + real fee); a sent tx can still fail | The outflow appears up to one poll interval after mining |
+| One pending withdrawal per wallet | Simple settlement, no nonce race between two sends | A second broadcast from the same wallet waits until the first is mined |
+| Settlement by the poller, not inside the request | The request returns at once; pending state survives a restart (it is in the DB) | No "mined" notification: check `/wallets` or Etherscan |
 | API key + localhost | Simple, no external service | Single shared secret; no per-user identity or audit |
 | Withdrawals from each wallet directly | Keeps the scope small | In production, deposit wallets would be swept to a hot/cold wallet structure |
+
+## Known limitations
+
+- **A broadcast transaction that is never mined** (dropped by the network) keeps its wallet "pending": the wallet's balance is not compared until then. Production would monitor pending transactions and replace them (same nonce, higher fee).
+- **Two broadcasts for the same wallet at the exact same moment** could both pass the "pending" check; the second reuses the same nonce and is rejected by the node (`502`). Acceptable for a single-operator admin tool.
+- **Deposits are not itemized** (see [Deposit handling](#deposit-handling)).
 
 ## Scripts
 
@@ -287,15 +353,18 @@ Per-deposit detail would require scanning blocks for transactions to the watched
 pnpm test
 ```
 
-No network and no secrets needed: tests use Hardhat's public test mnemonic, an in-memory database and a fake chain reader.
+No network and no secrets needed: tests use Hardhat's public test mnemonic, an in-memory database and fake chain clients.
 
 - **Wallet generation**: known test vector, determinism, adding and removing wallets, range limits, invalid mnemonics, no key material in the output.
 - **Config**: every accepted and rejected `WALLET_COUNT` and `PORT` format, required `ADMIN_API_KEY`, missing values, secrets never appearing in error messages.
 - **Balance tracking**: change detection, DB writes, precision above 2⁶³, rollback when a write fails.
-- **Request validation**: ETH amounts converted exactly (up to 27 digits), rejected formats (`"1e-3"`, `".5"`, 19 decimals, JSON numbers), address checksums, wallet index range, unknown fields.
+- **Request validation**: ETH amounts converted exactly (up to 27 digits), rejected formats (`"1e-3"`, `".5"`, 19 decimals, JSON numbers), address checksums, wallet index range, `broadcast` flag, unknown fields.
 - **Transaction building**: worst-case fee, the exact maximum sendable amount passes and one wei more fails, sending the whole balance fails.
 - **Signing**: the signer recovered from the signature is the selected wallet, the signed fields match the request, no key material in the output.
-- **API**: wallet listing, `401` without or with a wrong key (and no chain call), `400` before any chain call, `422` with the max sendable amount, a valid request returns a transaction signed by the right wallet, nothing written to the ledger.
+- **Settlement**: amount + real fee for a mined transaction, fee only for a reverted one.
+- **Poller**: nothing recorded while a withdrawal is pending, one outflow once mined, no double count on the next round, a deposit during the pending period recorded afterwards.
+- **API**: wallet listing; `401` without or with a wrong key (and no chain call); `400` before any chain call; `422` with the max sendable amount; a transaction signed by the right wallet and nothing recorded when not broadcast; with broadcast: `202` + pending withdrawal and no ledger row yet, `409` when pending or not polled, `502` records nothing.
+- **Safety guards**: the service refuses an RPC on another network; error messages never contain the RPC URL or its key.
 
 CI (GitHub Actions) runs type-check, lint and tests on every pull request.
 
@@ -303,17 +372,18 @@ CI (GitHub Actions) runs type-check, lint and tests on every pull request.
 
 ```
 src/
-  index.ts             entry point: config → wallets → DB → poller → API
+  index.ts             entry point: config → wallets → chain check → DB → poller → API
   config.ts            env validation (zod)
   generate-wallets.ts  HD wallet derivation (addresses only)
-  chain.ts             network definition, read-only client, fresh reads for withdrawals
+  chain.ts             network definition, testnet guard, read-only client, fresh reads for withdrawals
   balance-change.ts    compares stored and on-chain balances
   db.ts                SQLite schema and queries
-  poller.ts            8-minute balance poller
+  poller.ts            8-minute poller: balances + settlement of broadcast withdrawals
   withdrawal.ts        funds check + unsigned transaction (pure)
   signer.ts            derives one wallet's key and signs
+  settlement.ts        real cost of a mined withdrawal (pure)
   api.ts               HTTP API (Hono)
-  shared/              zod schemas and types
+  shared/              zod schemas, types, safe error messages
 scripts/
   generate-mnemonic.ts
 test/                  unit tests (Vitest)

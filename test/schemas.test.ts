@@ -69,6 +69,7 @@ describe("createWithdrawalRequestSchema", () => {
 			fromIndex: 0,
 			to: CHECKSUMMED,
 			amountWei: 500000000000000n,
+			broadcast: false,
 		});
 	});
 
@@ -97,14 +98,24 @@ describe("createWithdrawalRequestSchema", () => {
 		expect(schema.safeParse({ ...VALID, to }).success).toBe(false);
 	});
 
-	it("rejects unknown fields", () => {
-		expect(schema.safeParse({ ...VALID, broadcast: true }).success).toBe(false);
-	});
-
 	it.each(["fromIndex", "to", "amountEth"])("rejects a missing %s", (field) => {
 		const body = Object.fromEntries(
 			Object.entries(VALID).filter(([key]) => key !== field),
 		);
 		expect(schema.safeParse(body).success).toBe(false);
+	});
+
+	it("rejects unknown fields", () => {
+		expect(schema.safeParse({ ...VALID, memo: "hello" }).success).toBe(false);
+	});
+
+	it("accepts broadcast: true", () => {
+		expect(schema.parse({ ...VALID, broadcast: true }).broadcast).toBe(true);
+	});
+
+	it("rejects a non-boolean broadcast", () => {
+		expect(schema.safeParse({ ...VALID, broadcast: "yes" }).success).toBe(
+			false,
+		);
 	});
 });
