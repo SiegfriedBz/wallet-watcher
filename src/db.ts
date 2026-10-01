@@ -98,18 +98,64 @@ export const recordBalanceChange = (
 	}
 };
 
-export type LedgerRow = {
+// Raw rows as SQLite returns them: snake_case, amounts as text.
+// Not exported: the rest of the code only sees the app types below.
+type LedgerRow = {
 	type: LedgerType;
 	delta_wei: string;
 	balance_after_wei: string;
-	tx_hash: string | null;
+	tx_hash: Hash | null;
 	created_at: string;
 };
 
-export const getLedger = (db: DatabaseSync, address: Address): LedgerRow[] =>
-	db
+type BalanceRow = {
+	address: Address;
+	balance_wei: string;
+	updated_at: string;
+};
+
+export type LedgerEntry = {
+	type: LedgerType;
+	deltaWei: bigint;
+	balanceAfterWei: bigint;
+	txHash: Hash | null;
+	createdAt: string;
+};
+
+export type StoredBalance = {
+	address: Address;
+	balanceWei: bigint;
+	updatedAt: string;
+};
+
+export const getLedger = (
+	db: DatabaseSync,
+	address: Address,
+): LedgerEntry[] => {
+	const rows = db
 		.prepare(
 			`SELECT type, delta_wei, balance_after_wei, tx_hash, created_at
 			FROM ledger WHERE address = ? ORDER BY id`,
 		)
 		.all(address) as LedgerRow[];
+
+	return rows.map((row) => ({
+		type: row.type,
+		deltaWei: BigInt(row.delta_wei),
+		balanceAfterWei: BigInt(row.balance_after_wei),
+		txHash: row.tx_hash,
+		createdAt: row.created_at,
+	}));
+};
+
+export const getBalances = (db: DatabaseSync): StoredBalance[] => {
+	const rows = db
+		.prepare("SELECT address, balance_wei, updated_at FROM balances")
+		.all() as BalanceRow[];
+
+	return rows.map((row) => ({
+		address: row.address,
+		balanceWei: BigInt(row.balance_wei),
+		updatedAt: row.updated_at,
+	}));
+};
