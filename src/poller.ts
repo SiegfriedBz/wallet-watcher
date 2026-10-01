@@ -4,7 +4,7 @@ import type { ChainClient } from "./chain.js";
 import { getStoredBalance, recordBalanceChange } from "./db.js";
 import type { Wallet } from "./shared/types.js";
 
-// 8 minutes: safely under the 10-minute requirement.
+// 8 minutes: any on-chain change is reflected within 10 minutes.
 export const POLL_INTERVAL_MS = 8 * 60 * 1000;
 
 type PollerDeps = {
