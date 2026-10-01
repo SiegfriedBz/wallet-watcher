@@ -155,7 +155,11 @@ describe("POST /withdrawals: protection", () => {
 
 	it("returns 401 with a wrong API key", async () => {
 		const { app, readWithdrawalInputs } = setup();
-		const res = await postWithdrawal(app, VALID_BODY, "wrong-key-wrong-key-wrong-key-123");
+		const res = await postWithdrawal(
+			app,
+			VALID_BODY,
+			"wrong-key-wrong-key-wrong-key-123",
+		);
 
 		expect(res.status).toBe(401);
 		expect(readWithdrawalInputs).not.toHaveBeenCalled();
