@@ -61,12 +61,17 @@ export const createWithdrawalRequestSchema = (walletCount: number) =>
 				error: "Cannot send to the zero address (funds would be burned)",
 			}),
 			amountEth: AmountEthSchema,
+			// Optional: false (default) = build and sign only; true = also send it.
+			broadcast: z
+				.boolean({ error: "broadcast must be true or false" })
+				.default(false),
 		})
 		// The only place the ETH text becomes wei: exact, string → bigint.
-		.transform(({ fromIndex, to, amountEth }) => ({
+		.transform(({ fromIndex, to, amountEth, broadcast }) => ({
 			fromIndex,
 			to,
 			amountWei: parseEther(amountEth),
+			broadcast,
 		}));
 
 export type WithdrawalRequest = z.infer<

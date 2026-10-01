@@ -2,7 +2,12 @@ import { recoverTransactionAddress } from "viem";
 import { describe, expect, it, vi } from "vitest";
 import { createApi } from "../src/api.js";
 import type { WithdrawalChainInputs } from "../src/chain.js";
-import { getLedger, openDb, recordBalanceChange } from "../src/db.js";
+import {
+	getLedger,
+	getPendingWithdrawal,
+	openDb,
+	recordBalanceChange,
+} from "../src/db.js";
 import type { Wallet } from "../src/shared/types.js";
 import { signWithdrawal } from "../src/signer.js";
 
@@ -31,18 +36,28 @@ const CHAIN_INPUTS: WithdrawalChainInputs = {
 	maxPriorityFeePerGas: 2n * GWEI,
 };
 
+const TX_HASH = `0x${"cd".repeat(32)}` as const;
+
 type SetupOptions = {
 	lastPolledAt?: string | null;
 	chainInputs?: WithdrawalChainInputs;
+	broadcastFails?: boolean;
 };
 
 // In-memory DB + app: no file, no port, no network. Real signer with the test mnemonic.
 const setup = ({
 	lastPolledAt = null,
 	chainInputs = CHAIN_INPUTS,
+	broadcastFails = false,
 }: SetupOptions = {}) => {
 	const db = openDb(":memory:");
 	const readWithdrawalInputs = vi.fn(async () => chainInputs);
+	const broadcastTransaction = vi.fn(async () => {
+		if (broadcastFails) {
+			throw new Error("RPC unavailable");
+		}
+		return TX_HASH;
+	});
 	const app = createApi({
 		db,
 		wallets: WALLETS,
@@ -52,9 +67,20 @@ const setup = ({
 		readWithdrawalInputs,
 		signWithdrawal: ({ walletIndex, tx }) =>
 			signWithdrawal({ mnemonic: TEST_MNEMONIC, walletIndex, tx }),
+		broadcastTransaction,
 	});
-	return { db, app, readWithdrawalInputs };
+	return { db, app, readWithdrawalInputs, broadcastTransaction };
 };
+
+// Wallet #0 already read once by the poller (required before a broadcast).
+const trackWallet0 = (db: ReturnType<typeof openDb>) =>
+	recordBalanceChange(db, {
+		walletIndex: 0,
+		address: ADDRESS_0,
+		type: "initial",
+		deltaWei: ETH,
+		balanceWei: ETH,
+	});
 
 const postWithdrawal = (
 	app: ReturnType<typeof createApi>,
@@ -236,6 +262,69 @@ describe("POST /withdrawals: funds and signing", () => {
 		await postWithdrawal(app, VALID_BODY);
 
 		expect(getLedger(db, ADDRESS_0)).toHaveLength(0);
+	});
+});
+
+describe("POST /withdrawals: broadcast", () => {
+	const BROADCAST_BODY = { ...VALID_BODY, broadcast: true };
+
+	it("does not send anything when broadcast is not requested", async () => {
+		const { app, broadcastTransaction } = setup();
+		await postWithdrawal(app, VALID_BODY);
+		expect(broadcastTransaction).not.toHaveBeenCalled();
+	});
+
+	it("sends the signed tx and records it as pending, without a ledger row yet", async () => {
+		const { app, db, broadcastTransaction } = setup();
+		trackWallet0(db);
+
+		const res = await postWithdrawal(app, BROADCAST_BODY);
+		const body = await res.json();
+
+		expect(res.status).toBe(202);
+		expect(body).toMatchObject({
+			broadcast: true,
+			status: "pending",
+			hash: TX_HASH,
+		});
+		expect(broadcastTransaction).toHaveBeenCalledWith(
+			body.serializedTransaction,
+		);
+		expect(getPendingWithdrawal(db, ADDRESS_0)).toMatchObject({
+			txHash: TX_HASH,
+			valueWei: 500000000000000n,
+		});
+		expect(getLedger(db, ADDRESS_0)).toHaveLength(1); // only "initial"
+	});
+
+	it("returns 409 when the wallet already has a pending withdrawal", async () => {
+		const { app, db, broadcastTransaction } = setup();
+		trackWallet0(db);
+		await postWithdrawal(app, BROADCAST_BODY);
+
+		const res = await postWithdrawal(app, BROADCAST_BODY);
+
+		expect(res.status).toBe(409);
+		expect(broadcastTransaction).toHaveBeenCalledTimes(1);
+	});
+
+	it("returns 409 when the wallet was never polled", async () => {
+		const { app, broadcastTransaction } = setup();
+		const res = await postWithdrawal(app, BROADCAST_BODY);
+
+		expect(res.status).toBe(409);
+		expect(broadcastTransaction).not.toHaveBeenCalled();
+	});
+
+	it("returns 502 and records nothing when sending fails", async () => {
+		const { app, db } = setup({ broadcastFails: true });
+		trackWallet0(db);
+
+		const res = await postWithdrawal(app, BROADCAST_BODY);
+
+		expect(res.status).toBe(502);
+		expect(getPendingWithdrawal(db, ADDRESS_0)).toBeNull();
+		expect(getLedger(db, ADDRESS_0)).toHaveLength(1);
 	});
 });
 

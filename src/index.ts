@@ -42,6 +42,9 @@ try {
 		readWithdrawalInputs: (params) => readWithdrawalInputs(chainClient, params),
 		signWithdrawal: ({ walletIndex, tx }) =>
 			signWithdrawal({ mnemonic: config.MNEMONIC, walletIndex, tx }),
+		broadcastTransaction: (serializedTransaction) =>
+			chainClient.sendRawTransaction({ serializedTransaction }),
+
 		logRequests: true,
 	});
 
