@@ -13,6 +13,7 @@ import {
 import type { WithdrawalChainInputs } from "./chain.js";
 import {
 	getBalances,
+	getLedger,
 	getPendingWithdrawal,
 	getStoredBalance,
 	recordBroadcast,
@@ -85,6 +86,30 @@ export const createApi = ({
 					balanceChangedAt: balance?.updatedAt ?? null,
 				};
 			}),
+		});
+	});
+
+	// One wallet's balance-change log, oldest first, as stored. A read like /wallets, so
+	// no key. The route only matches digits; an index that is not watched is a 404.
+	app.get("/wallets/:index{[0-9]+}/ledger", (c) => {
+		const index = Number(c.req.param("index"));
+		const wallet = wallets.find((w) => w.index === index);
+		if (!wallet) {
+			return c.json({ error: "Unknown wallet" }, 404);
+		}
+
+		return c.json({
+			index: wallet.index,
+			address: wallet.address,
+			entries: getLedger(db, wallet.address).map((entry) => ({
+				type: entry.type,
+				deltaWei: entry.deltaWei.toString(),
+				deltaEth: formatEther(entry.deltaWei),
+				balanceAfterWei: entry.balanceAfterWei.toString(),
+				balanceAfterEth: formatEther(entry.balanceAfterWei),
+				txHash: entry.txHash,
+				createdAt: entry.createdAt,
+			})),
 		});
 	});
 
