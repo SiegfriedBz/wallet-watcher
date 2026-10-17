@@ -197,6 +197,7 @@ describe("POST /withdrawals: validation", () => {
 		["amount as a JSON number", { ...VALID_BODY, amountEth: 0.0005 }],
 		["unwatched wallet", { ...VALID_BODY, fromIndex: 2 }],
 		["invalid address", { ...VALID_BODY, to: "0x1234" }],
+		["the sending wallet as destination", { ...VALID_BODY, to: ADDRESS_0 }],
 		["missing field", { fromIndex: 0, to: ADDRESS_1 }],
 	])("returns 400 for %s, before any chain call", async (_label, body) => {
 		const { app, readWithdrawalInputs } = setup();

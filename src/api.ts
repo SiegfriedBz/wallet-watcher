@@ -88,7 +88,7 @@ export const createApi = ({
 		});
 	});
 
-	const withdrawalRequestSchema = createWithdrawalRequestSchema(wallets.length);
+	const withdrawalRequestSchema = createWithdrawalRequestSchema(wallets);
 
 	// Builds and signs a withdrawal; sends it only if broadcast: true. Protected: anyone
 	// holding a signed tx can broadcast it. bearerAuth runs first (constant-time key
