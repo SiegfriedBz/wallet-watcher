@@ -61,8 +61,9 @@ export const pollOnce = async (deps: PollerDeps) => {
 
 			const currentWei = await client.getBalance({ address: wallet.address });
 
-			// Still pending (or broadcast during the await above): the chain may not show
-			// the withdrawal yet, so comparing now would record a fake inflow. Next round.
+			// Still pending (or broadcast during the await above): no diff this round. The tx can
+			// be mined at any moment, so a diff could record the drop as external_outflow and
+			// the settlement would record it again. The receipt alone books the outflow.
 			if (getPendingWithdrawal(db, wallet.address)) {
 				continue;
 			}
