@@ -59,7 +59,7 @@ export const createApi = ({
 }: ApiDeps) => {
 	const app = new Hono();
 
-	// One line per request (method, path, status, time). Never bodies or headers.
+	// Two lines per request (method and path in; status and time out). Never bodies or headers.
 	// Must be registered before the routes to apply to them.
 	if (logRequests) {
 		app.use(logger());
@@ -141,7 +141,8 @@ export const createApi = ({
 		}
 
 		if (broadcast) {
-			// One withdrawal in flight per wallet: simple settlement, no nonce race.
+			// One withdrawal in flight per wallet keeps settlement and nonces simple. Check,
+			// then record after the send: two requests at the same instant can both pass.
 			if (getPendingWithdrawal(db, from)) {
 				return c.json(
 					{ error: "This wallet already has a withdrawal waiting to be mined" },

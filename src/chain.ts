@@ -11,7 +11,8 @@ import type { WithdrawalInputs } from "./withdrawal.js";
 // The only place the network is chosen.
 export const CHAIN = sepolia;
 
-// Read-only connection: no key, cannot sign or send anything.
+// No account, no key: this client cannot sign. It reads the chain, and relays
+// transactions already signed by signer.ts.
 export const createChainClient = (rpcUrl: string) =>
 	createPublicClient({ chain: CHAIN, transport: http(rpcUrl) });
 
@@ -71,7 +72,7 @@ export type WithdrawalChainInputs = Pick<
 	"balanceWei" | "nonce" | "gas" | "maxFeePerGas" | "maxPriorityFeePerGas"
 >;
 
-// Gas of a plain ETH transfer: the minimum any transaction costs.
+// Gas of a plain ETH transfer to an existing account: the least a withdrawal costs.
 const TRANSFER_GAS = 21000n;
 
 export const readWithdrawalInputs = async (
@@ -85,8 +86,9 @@ export const readWithdrawalInputs = async (
 		client.estimateFeesPerGas(),
 	]);
 
-	// The node refuses to estimate a tx the wallet cannot afford. The funds check
-	// will fail anyway, so use the minimum gas to report how much could be sent.
+	// The node can refuse to estimate a transfer of the whole balance or more. The funds
+	// check fails anyway, so use the minimum gas to report the most that could be sent
+	// (a never-used recipient costs far more: 204,600 gas on Sepolia since Glamsterdam).
 	const gas =
 		amountWei >= balanceWei
 			? TRANSFER_GAS

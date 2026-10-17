@@ -170,8 +170,8 @@ export type Poller = {
 
 // Polls now, then every POLL_INTERVAL_MS. The next round is scheduled only after
 // the current one finishes, so two rounds never overlap.
-// lastPolledAt = start of the last round that read the balances: every balance was
-// read after it. floorBlock carries the newest block relied on into the next round.
+// lastPolledAt = start of the last round whose balance snapshot was used: every balance
+// was read after it. floorBlock carries the newest block relied on into the next round.
 export const startPoller = (deps: PollerDeps): Poller => {
 	let timer: NodeJS.Timeout | undefined;
 	let stopped = false;

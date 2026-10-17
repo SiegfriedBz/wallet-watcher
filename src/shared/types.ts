@@ -5,5 +5,6 @@ export type Wallet = {
 	address: Address;
 };
 
-// Why a ledger row exists. "outflow" is only written when the service broadcasts.
+// Why a ledger row exists. "outflow" is only written for a withdrawal the service
+// broadcast, once the poller finds its receipt.
 export type LedgerType = "initial" | "inflow" | "outflow" | "external_outflow";

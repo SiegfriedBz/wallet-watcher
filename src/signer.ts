@@ -29,8 +29,9 @@ type SignParams = {
 const isSignedEip1559 = (tx: Hex): tx is TransactionSerializedEIP1559 =>
 	tx.startsWith("0x02");
 
-// The only place a private key exists: derived for one wallet, used once to sign,
-// then dropped when the function returns. Only the signed tx and signature leave.
+// The only place a private key signs: derived for one wallet, used once, then dropped
+// when the function returns (generateWallets derives keys too, only for addresses).
+// Only the signed tx and signature leave.
 export const signWithdrawal = async ({
 	mnemonic,
 	walletIndex,

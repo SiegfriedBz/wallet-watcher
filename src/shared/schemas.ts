@@ -67,7 +67,7 @@ export const createWithdrawalRequestSchema = (wallets: Wallet[]) =>
 				.boolean({ error: "broadcast must be true or false" })
 				.default(false),
 		})
-		// Sending to itself would only burn the fee, and book an outflow + inflow pair.
+		// Sending to itself would only cost the fee, and book an outflow + inflow pair.
 		.refine(
 			({ fromIndex, to }) => {
 				const from = wallets.find((w) => w.index === fromIndex)?.address;
