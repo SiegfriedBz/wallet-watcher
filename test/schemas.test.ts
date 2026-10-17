@@ -4,6 +4,7 @@ import {
 	AmountEthSchema,
 	createWithdrawalRequestSchema,
 } from "../src/shared/schemas.js";
+import type { Wallet } from "../src/shared/types.js";
 
 // Hardhat test address #1 (public), checksummed and lowercase.
 const CHECKSUMMED = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
@@ -61,7 +62,15 @@ describe("AddressSchema", () => {
 });
 
 describe("createWithdrawalRequestSchema", () => {
-	const schema = createWithdrawalRequestSchema(5);
+	// Watched wallets 0..4: the public Hardhat addresses (#1 is CHECKSUMMED above).
+	const WALLETS: Wallet[] = [
+		{ index: 0, address: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" },
+		{ index: 1, address: CHECKSUMMED },
+		{ index: 2, address: "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC" },
+		{ index: 3, address: "0x90F79bf6EB2c4f870365E785982E1f101E93b906" },
+		{ index: 4, address: "0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65" },
+	];
+	const schema = createWithdrawalRequestSchema(WALLETS);
 	const VALID = { fromIndex: 0, to: LOWERCASE, amountEth: "0.0005" };
 
 	it("parses a valid request into { fromIndex, to, amountWei }", () => {
@@ -96,6 +105,13 @@ describe("createWithdrawalRequestSchema", () => {
 	it("rejects the zero address", () => {
 		const to = "0x0000000000000000000000000000000000000000";
 		expect(schema.safeParse({ ...VALID, to }).success).toBe(false);
+	});
+
+	it("rejects sending to the sending wallet, whatever the letter case", () => {
+		// VALID.to is wallet #1 in lowercase; wallet #1 is stored checksummed.
+		const result = schema.safeParse({ ...VALID, fromIndex: 1 });
+		expect(result.success).toBe(false);
+		expect(result.error?.issues[0]?.path).toEqual(["to"]);
 	});
 
 	it.each(["fromIndex", "to", "amountEth"])("rejects a missing %s", (field) => {

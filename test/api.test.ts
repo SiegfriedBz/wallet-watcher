@@ -170,6 +170,64 @@ describe("GET /wallets", () => {
 	});
 });
 
+describe("GET /wallets/:index/ledger", () => {
+	it("returns the wallet's ledger, oldest first, with exact signed amounts", async () => {
+		const { db, app } = setup();
+		trackWallet0(db);
+		recordBalanceChange(db, {
+			walletIndex: 0,
+			address: ADDRESS_0,
+			type: "outflow",
+			deltaWei: -523183071527000n,
+			balanceWei: ETH - 523183071527000n,
+			txHash: TX_HASH,
+		});
+
+		const res = await app.request("/wallets/0/ledger");
+
+		expect(res.status).toBe(200);
+		expect(await res.json()).toEqual({
+			index: 0,
+			address: ADDRESS_0,
+			entries: [
+				{
+					type: "initial",
+					deltaWei: "1000000000000000000",
+					deltaEth: "1",
+					balanceAfterWei: "1000000000000000000",
+					balanceAfterEth: "1",
+					txHash: null,
+					createdAt: expect.any(String),
+				},
+				{
+					type: "outflow",
+					deltaWei: "-523183071527000",
+					deltaEth: "-0.000523183071527",
+					balanceAfterWei: "999476816928473000",
+					balanceAfterEth: "0.999476816928473",
+					txHash: TX_HASH,
+					createdAt: expect.any(String),
+				},
+			],
+		});
+	});
+
+	it("returns an empty ledger for a watched wallet not polled yet", async () => {
+		const { app } = setup();
+		const body = await (await app.request("/wallets/1/ledger")).json();
+		expect(body).toEqual({ index: 1, address: ADDRESS_1, entries: [] });
+	});
+
+	it.each(["2", "-1", "1.5", "abc"])(
+		"returns 404 for index '%s' (not a watched wallet)",
+		async (index) => {
+			const { app } = setup();
+			const res = await app.request(`/wallets/${index}/ledger`);
+			expect(res.status).toBe(404);
+		},
+	);
+});
+
 describe("POST /withdrawals: protection", () => {
 	it("returns 401 without an API key, and reads nothing from the chain", async () => {
 		const { app, readWithdrawalInputs } = setup();
@@ -197,6 +255,7 @@ describe("POST /withdrawals: validation", () => {
 		["amount as a JSON number", { ...VALID_BODY, amountEth: 0.0005 }],
 		["unwatched wallet", { ...VALID_BODY, fromIndex: 2 }],
 		["invalid address", { ...VALID_BODY, to: "0x1234" }],
+		["the sending wallet as destination", { ...VALID_BODY, to: ADDRESS_0 }],
 		["missing field", { fromIndex: 0, to: ADDRESS_1 }],
 	])("returns 400 for %s, before any chain call", async (_label, body) => {
 		const { app, readWithdrawalInputs } = setup();

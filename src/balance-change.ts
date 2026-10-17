@@ -6,7 +6,8 @@ export type DetectedChange = {
 };
 
 // Compares the stored balance with the one just read on-chain.
-// The poller never returns "outflow": that type is only written at broadcast.
+// Never "outflow": that type is only written at settlement, from the receipt of a
+// withdrawal this service broadcast.
 export const detectChange = (
 	storedWei: bigint | null,
 	currentWei: bigint,

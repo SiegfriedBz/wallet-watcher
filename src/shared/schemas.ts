@@ -2,6 +2,7 @@ import { validateMnemonic } from "@scure/bip39";
 import { getAddress, isAddress, parseEther, zeroAddress } from "viem";
 import { english } from "viem/accounts";
 import { z } from "zod";
+import type { Wallet } from "./types.js";
 
 export const MIN_WALLETS = 1;
 export const MAX_WALLETS = 20;
@@ -45,17 +46,17 @@ export const AddressSchema = z
 	.refine((value) => isAddress(value), { error: "Invalid Ethereum address" })
 	.transform((value) => getAddress(value));
 
-// Built at startup from N: only watched wallets (0..N-1) can send.
+// Built at startup from the watched wallets: only they (0..N-1) can send.
 // Strict: unknown fields are rejected instead of silently ignored.
-export const createWithdrawalRequestSchema = (walletCount: number) =>
+export const createWithdrawalRequestSchema = (wallets: Wallet[]) =>
 	z
 		.strictObject({
 			fromIndex: z
 				.number({ error: "fromIndex must be a number" })
 				.int({ error: "fromIndex must be a whole number" })
 				.min(0, { error: "fromIndex must be at least 0" })
-				.max(walletCount - 1, {
-					error: `fromIndex must be at most ${walletCount - 1} (watched wallets only)`,
+				.max(wallets.length - 1, {
+					error: `fromIndex must be at most ${wallets.length - 1} (watched wallets only)`,
 				}),
 			to: AddressSchema.refine((address) => address !== zeroAddress, {
 				error: "Cannot send to the zero address (funds would be burned)",
@@ -66,6 +67,14 @@ export const createWithdrawalRequestSchema = (walletCount: number) =>
 				.boolean({ error: "broadcast must be true or false" })
 				.default(false),
 		})
+		// Sending to itself would only cost the fee, and book an outflow + inflow pair.
+		.refine(
+			({ fromIndex, to }) => {
+				const from = wallets.find((w) => w.index === fromIndex)?.address;
+				return from?.toLowerCase() !== to.toLowerCase();
+			},
+			{ error: "Cannot send to the sending wallet", path: ["to"] },
+		)
 		// The only place the ETH text becomes wei: exact, string → bigint.
 		.transform(({ fromIndex, to, amountEth, broadcast }) => ({
 			fromIndex,
