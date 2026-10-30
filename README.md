@@ -594,7 +594,3 @@ scripts/
   generate-mnemonic.ts
 test/                  unit tests (Vitest)
 ```
-
-## License
-
-ISC, as declared in `package.json`.

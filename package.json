@@ -17,8 +17,7 @@
 		"generate:mnemonic": "tsx scripts/generate-mnemonic.ts"
 	},
 	"keywords": [],
-	"author": "",
-	"license": "ISC",
+	"author": "Siegfried Bozza (https://github.com/SiegfriedBz)",
 	"packageManager": "pnpm@10.24.0",
 	"dependencies": {
 		"@hono/node-server": "^2.1.3",
