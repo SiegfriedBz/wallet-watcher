@@ -9,21 +9,23 @@ A self-contained slice of a custody backend, on **Ethereum Sepolia**, in Node.js
 - builds and signs **EIP-1559 withdrawals**, and optionally broadcasts them,
 - exposes all of it through a small **localhost HTTP API**.
 
-**Stack:** Node.js 24 · TypeScript (strict) · [viem](https://viem.sh) · [Hono](https://hono.dev) · [Zod](https://zod.dev) · SQLite (`node:sqlite`) · Vitest · Biome
+I built it to a written brief (the [requirements](#requirements-coverage) are below) as a personal project. It is one process with a local SQLite file, not a production custody system: [Known bugs](#known-bugs), [Known limitations](#known-limitations) and [Path to production](#path-to-production) say what that leaves out.
+
+**Stack:** Node.js 22.13+ (CI on 24) · TypeScript (strict) · [viem](https://viem.sh) · [Hono](https://hono.dev) · [Zod](https://zod.dev) · SQLite (`node:sqlite`) · Vitest · Biome
 
 > [!WARNING]
 > Testnet only. The service refuses to start on any chain other than Sepolia. Never use a mnemonic that holds real funds.
 
 ## Highlights
 
-- **Exactly-once outflows.** A broadcast is recorded as `pending`. The poller then writes **one** `outflow` from the transaction receipt (amount + real fee), never from a balance diff. → [Broadcast and settlement](#broadcast-and-settlement)
+- **One outflow per broadcast, from its receipt.** A broadcast is recorded as `pending`. The poller then writes at most **one** `outflow` for it, from the transaction receipt (amount + real fee), never from a balance diff; a spend the service did not record shows up as `external_outflow` instead. This holds within one running process (see [Known bugs](#known-bugs)). → [Broadcast and settlement](#broadcast-and-settlement)
 - **Exact amounts.** `bigint` wei in code, decimal strings in JSON and SQLite, no floating point anywhere money is handled. → [Amounts and precision](#amounts-and-precision)
 - **Block-consistent reads.** Each round reads every balance in one Multicall3 `eth_call`, together with the block it came from, and never compares against a block older than one it already relied on. → [Balance tracking](#balance-tracking)
 - **Worst-case fee check.** A withdrawal is signed only if `balance ≥ value + gasLimit × maxFeePerGas`, on the balance read just before signing, so the network cannot reject it for lack of funds unless that balance drops before it is mined. → [Withdrawals](#withdrawals)
-- **Key isolation.** Only `signer.ts` signs, with one wallet's key derived for one signature. No private key is ever stored or returned, and the HTTP layer never sees the mnemonic or the RPC client. → [Key material and secrets](#key-material-and-secrets)
+- **Signing in one module.** Only `signer.ts` signs, with one wallet's key derived for one signature. No private key is ever stored or returned, and the HTTP layer never receives the mnemonic or the RPC client. The boundary is between modules of one process: the mnemonic is still in that process's memory and environment. → [Key material and secrets](#key-material-and-secrets)
 - **Testnet enforced, not just documented.** `eth_chainId` is checked at startup, and chain id `11155111` is signed into every transaction, so none can be replayed on another chain.
 
-**Contents:** [Requirements coverage](#requirements-coverage) · [Quick start](#quick-start) · [Walkthrough on Sepolia](#walkthrough-on-sepolia) · [Configuration](#configuration) · [API](#api) · [How it works](#how-it-works) · [Amounts and precision](#amounts-and-precision) · [Key material and secrets](#key-material-and-secrets) · [Deposit handling](#deposit-handling) · [Design choices and trade-offs](#design-choices-and-trade-offs) · [Known limitations](#known-limitations) · [Path to production](#path-to-production) · [Development](#development)
+**Contents:** [Requirements coverage](#requirements-coverage) · [Quick start](#quick-start) · [Walkthrough on Sepolia](#walkthrough-on-sepolia) · [Configuration](#configuration) · [API](#api) · [How it works](#how-it-works) · [Amounts and precision](#amounts-and-precision) · [Key material and secrets](#key-material-and-secrets) · [Deposit handling](#deposit-handling) · [Design choices and trade-offs](#design-choices-and-trade-offs) · [Known bugs](#known-bugs) · [Known limitations](#known-limitations) · [Path to production](#path-to-production) · [Development](#development)
 
 ## Requirements coverage
 
@@ -31,8 +33,8 @@ A self-contained slice of a custody backend, on **Ethereum Sepolia**, in Node.js
 |---|---|---|---|
 | 1 | **Wallet generation**: N from 1 to 20, deterministic and index-ordered | BIP-44 path `m/44'/60'/0'/0/i` from one mnemonic ([`generate-wallets.ts`](src/generate-wallets.ts)) | Hardhat test vector; N + m keeps the first N; N − m is a prefix; 0 and 21 rejected ([tests](test/generate-wallets.test.ts)) |
 | 2 | **Balance tracking**: a change reflected within 10 minutes, persisted | Poller at startup, then every 8 minutes, all balances in one Multicall3 snapshot; SQLite ([`poller.ts`](src/poller.ts), [`chain.ts`](src/chain.ts), [`db.ts`](src/db.ts)) | [Poller](test/poller.test.ts), [chain](test/chain.test.ts) and [DB](test/db.test.ts) tests; live inflows on Sepolia |
-| 3 | **Balance-change log**: inflows by tracking, outflows only when broadcast | Append-only `ledger` table, served at `GET /wallets/:index/ledger`; an `outflow` is written only for a transaction this service broadcast, once mined | Build-and-sign writes nothing; a broadcast gives exactly one `outflow` ([API](test/api.test.ts) and [poller](test/poller.test.ts) tests, [real run](#walkthrough-on-sepolia)) |
-| 4 | **Withdrawal**: build from a selected wallet; JSON with payload and signature; broadcast optional | EIP-1559 transaction, worst-case fee check, key derived at signing ([`withdrawal.ts`](src/withdrawal.ts), [`signer.ts`](src/signer.ts)) | Max sendable amount exact to the wei; signer recovered from the signature ([withdrawal](test/withdrawal.test.ts) and [signer](test/signer.test.ts) tests) |
+| 3 | **Balance-change log**: inflows by tracking, outflows only when broadcast | Append-only `ledger` table, served at `GET /wallets/:index/ledger`; an `outflow` is written only for a transaction this service broadcast, once mined | Build-and-sign writes nothing; a broadcast gives one `outflow` ([API](test/api.test.ts) and [poller](test/poller.test.ts) tests, [real run](#walkthrough-on-sepolia)) |
+| 4 | **Withdrawal**: build from a selected wallet; JSON with payload and signature; broadcast optional | EIP-1559 transaction, worst-case fee check, key derived at signing ([`withdrawal.ts`](src/withdrawal.ts), [`signer.ts`](src/signer.ts)) | Max sendable amount exact to the wei for fixed chain inputs; signer recovered from the signature ([withdrawal](test/withdrawal.test.ts) and [signer](test/signer.test.ts) tests) |
 | 5 | **API**: (a) addresses and balances, (b) create and optionally broadcast | `GET /wallets`, `POST /withdrawals`, plus `GET /wallets/:index/ledger` ([`api.ts`](src/api.ts)) | [API tests](test/api.test.ts) |
 | 6 | **Unit tests** on wallet generation and transaction building | 156 tests in 12 files, with no network and no secrets | `pnpm test`, and CI on every pull request and every push to `main` |
 | — | **Deposit handling** described | [Deposit handling](#deposit-handling) | — |
@@ -349,7 +351,7 @@ The API serves balances from the database, never from the chain: responses are f
 
 - **Fresh chain state, never the database.** The stored balance can be minutes old; a spend is always decided on the current on-chain balance.
 - **Worst-case fee.** Under EIP-1559, a transaction pays `gasUsed × min(maxFeePerGas, baseFee + maxPriorityFeePerGas)`, and nodes refuse it unless the balance covers `value + gasLimit × maxFeePerGas`. The service checks exactly that bound, on the balance read just before signing, so a signed withdrawal cannot be rejected for lack of funds unless that balance drops before it is mined (for example, another spend from the same wallet). Fees come from viem's `estimateFeesPerGas` (`maxFeePerGas = 1.2 × baseFee + maxPriorityFeePerGas`). As a result, sending a wallet's entire balance always fails, and the `422` says how much can be sent instead.
-- **Gas** comes from `eth_estimateGas`, so recipients that cost more than a plain 21,000-gas transfer are handled: contracts and, on Sepolia since Glamsterdam, never-used addresses (204,600 gas used, of which 183,600 pay for the new account's state; `eth_estimateGas` returns 207,391; measured on 17 October 2026). When the amount alone is at least the balance, the funds check must fail and the node may refuse to estimate, so 21,000 is used instead: the max sendable amount in the `422` is then an upper bound.
+- **Gas** comes from `eth_estimateGas`, so recipients that cost more than a plain 21,000-gas transfer are handled: contracts and, on Sepolia since Glamsterdam, never-used addresses (204,600 gas used, of which 183,600 pay for the new account's state; `eth_estimateGas` returns 207,391; measured on 17 October 2026). When the amount alone is at least the balance, the funds check must fail and the node may refuse to estimate, so the code skips the estimate and assumes 21,000 gas: the max sendable amount in the `422` is then an upper bound.
 - **Nonce** is read with the `pending` block tag, so a transaction still waiting in the mempool is not reused.
 - **Signing** derives the private key of that one wallet, signs, and returns only the signed transaction and its signature. The key is never stored.
 
@@ -397,14 +399,14 @@ sequenceDiagram
 | At broadcast | A `withdrawals` row: `pending`, amount, tx hash. The ledger is not touched: the balance has not changed yet. |
 | At the first poll after mining | In one database transaction: status `mined` (or `reverted`) and the real fee (`gasUsed × effectiveGasPrice`), **one** `outflow` ledger row of −(amount + fee), or −fee if reverted, and the new balance. |
 
-**Why the outflow is counted exactly once.** While a withdrawal is pending, the poller skips that wallet's balance diff. The transaction can be mined at any moment, including between the receipt check and the balance read; a diff would then record the drop as an `external_outflow`, and the settlement would record it a second time. Skipping the diff makes the receipt the only source of an outflow. And once settled, the wallet is only compared against a snapshot at or after the receipt's block, so a node that is behind cannot book the drop back as an inflow. After settlement, the stored balance matches the chain again, and any deposit received in the meantime is recorded as an `inflow` in the same round.
+**Why the outflow is counted once.** While a withdrawal is pending, the poller skips that wallet's balance diff. The transaction can be mined at any moment, including between the receipt check and the balance read; a diff would then record the drop as an `external_outflow`, and the settlement would record it a second time. Skipping the diff makes the receipt the only source of an outflow. And once settled, the wallet is only compared against a snapshot at or after the receipt's block, so a node that is behind cannot book the drop back as an inflow. Any deposit received in the meantime is recorded as an `inflow` in the same round, after the settlement, so the stored balance matches the chain again at the end of that round. Until then, the outflow row's balance-after can be wrong (see [Known bugs](#known-bugs)).
 
 | Case | Behaviour |
 |---|---|
 | Sending fails | `502`, nothing recorded. If the node accepted the transaction anyway (e.g. the response timed out), it can still be mined; the poller then records it as `external_outflow`. So check the address on a block explorer before retrying: if the first transaction did reach the node, a retry gets the next nonce, and both are sent. |
 | Crash between sending and recording (milliseconds) | The poller sees the drop and records `external_outflow`: the balance stays correct, and the event is flagged. |
 | Transaction reverted | `outflow` = −fee only (the gas is paid, the amount stays), status `reverted`. |
-| Deposit while a withdrawal is pending | Recorded as `inflow` right after the settlement. |
+| Deposit while a withdrawal is pending | Recorded as `inflow` right after the settlement, in the same round. The outflow row written just before it can show a balance-after that is too low, even negative (see [Known bugs](#known-bugs)). |
 | Balance read reaches a node behind the receipt's block | The poller waits one block and reads again. If the node is still behind, nothing is compared until the next round: no false row. |
 | Never mined | The wallet stays pending (see [Known limitations](#known-limitations)). |
 
@@ -451,11 +453,11 @@ So:
 - **In requests**, `amountEth` must be a string matching `^\d+(\.\d{1,18})?$`, converted once with `parseEther`. JSON numbers are rejected: `JSON.parse` turns them into doubles before any validation runs, so `1.000000000000000001` would already have become `1`.
 - **Fees** are computed in `bigint` too: `gas × maxFeePerGas` before signing, `gasUsed × effectiveGasPrice` at settlement.
 
-The tests check exact conversions up to 27 significant digits, values above 2⁶³ stored and read back through SQLite, and the max sendable amount to the wei (one wei more fails).
+The tests check exact conversions up to 27 significant digits, values above 2⁶³ stored and read back through SQLite, and the max sendable amount to the wei on fixed chain inputs (one wei more fails). On a live chain, fees are read again on every request, so the amount the `422` gives is exact only for that request's fees.
 
 ## Key material and secrets
 
-**Trust boundary: the process, and the `.env` file it loads.** The mnemonic is the most sensitive secret, the root of every wallet (the admin key and the RPC URL are the other two). It sits in plain text in `.env`, and from startup until exit in the process memory and environment: anything that can read one of them controls all the wallets. That is acceptable on a testnet, and it is the first thing a [production version](#path-to-production) changes.
+**Trust boundary: the process, and the `.env` file it loads.** The mnemonic is the most sensitive secret, the root of every wallet (the admin key and the RPC URL are the other two). It sits in plain text in `.env`, and from startup until exit in the process memory and environment (`index.ts` loads `.env` with `process.loadEnvFile()`, which puts it in `process.env`): anything that can read one of them controls all the wallets. That is acceptable on a testnet, and it is the first thing a [production version](#path-to-production) changes.
 
 Within that boundary:
 
@@ -465,7 +467,7 @@ Within that boundary:
 | Secrets in logs and errors | The mnemonic and the admin key are never logged or returned. Config errors name the variable, never its value (tested). |
 | RPC API key | Providers put it in the URL, and viem's full error messages include the URL. Only viem's `shortMessage` is ever logged (tested). |
 | Private keys | Never stored, cached, logged or returned. `signer.ts`, the only place that signs, derives one wallet's key per signature. Address derivation also derives each key once at startup, only to compute its address, and returns `{ index, address }` only. |
-| Least privilege | `api.ts` receives functions (read withdrawal inputs, sign, broadcast, and the poller's `lastPolledAt`), never the mnemonic or the RPC client. The RPC client is a viem public client with no account: it relays signed transactions, but cannot sign one. |
+| Least privilege, between modules | `api.ts` receives functions (read withdrawal inputs, sign, broadcast, and the poller's `lastPolledAt`), never the mnemonic or the RPC client. The RPC client is a viem public client with no account: it relays signed transactions, but cannot sign one. All of this runs in one process, so it limits what each module is handed, not what a compromised process can read. |
 | A signed transaction is a bearer instrument | Anyone holding a `serializedTransaction` can broadcast it. So `POST /withdrawals` requires the admin key even without `broadcast`, compared in constant time (Hono `bearerAuth`). |
 | Replay | The chain id (`11155111`) is part of the signed EIP-1559 payload: a signed withdrawal is invalid on mainnet or any other chain. |
 | Wrong network | `eth_chainId` is checked at startup. On any chain other than Sepolia, the service refuses to start, before the database or the poller. |
@@ -508,12 +510,17 @@ Per-deposit detail would need transaction-level data: an indexer, trace APIs (`t
 | Admin key + localhost | Simple, no external service | One shared secret: no per-user identity or audit trail |
 | Withdrawals from each wallet directly | Keeps the scope small | Production would sweep deposit wallets into a hot/cold structure |
 
+## Known bugs
+
+- **Balance-after can go negative.** If a deposit lands and a withdrawal from the same wallet is mined before the poller has seen the deposit, settlement computes the outflow row's balance-after from the stale stored balance. That row, and `GET /wallets`, can then show a balance that is too low, even negative, until the same round books the deposit as an `inflow` (and if the balance read fails or the node is behind, until a later round, up to 8 minutes). The ledger's deltas stay right; only the running balance on that row is wrong. A fix: book the unseen inflow before the outflow, for example from the balance at `receipt.blockNumber − 1`.
+- **"Once" holds inside one running process.** A crash between `eth_sendRawTransaction` and the insert, or a `502` whose transaction reached the node anyway, is booked as `external_outflow`, not as the withdrawal's `outflow`. A receipt later removed by a reorg stays booked (see [No confirmation depth](#known-limitations)).
+
 ## Known limitations
 
 - **No confirmation depth.** Balances are read at the `latest` block, and a withdrawal is settled on its first receipt, so a reorg could undo a recorded change. Waiting for finality would break the 10-minute requirement: on Ethereum, the `finalized` block trails the head by at least ~13 minutes (two epochs). Production would credit deposits after N confirmations and re-check settled receipts.
 - **A transaction that is never mined** (dropped, or priced out by a base-fee spike) keeps its wallet pending: no new broadcast, and no balance diff for that wallet, so a deposit to it is not recorded either. Production would monitor it and replace it (same nonce, higher fees).
 - **Two broadcasts for the same wallet at the same instant** can both pass the one-pending check (check, then insert after the send: not atomic). Usually both read the same nonce and the node rejects the second (`502`). But a second one paying at least 10% more would replace the first, which would then stay pending forever, and one that reads the nonce after the first reached the node gets the next nonce, so both are sent. A per-wallet lock around check → sign → send would close the gap.
-- **The block floor lives in memory.** Within a run, no snapshot older than the previous one is ever compared. After a restart, the first round only checks it against the receipts it applies, so a node behind the previous run's last read would go unnoticed. Storing the block number with each ledger row would close that (see [Path to production](#path-to-production)).
+- **The block floor lives in memory.** So the guarantee that a lagging node cannot create a false inflow holds while the service runs. Within a run, no snapshot older than the previous one is ever compared. After a restart, the first round only checks it against the receipts it applies, so a node behind the previous run's last read would go unnoticed. Storing the block number with each ledger row would close that (see [Path to production](#path-to-production)).
 - **The 10-minute bound assumes a responsive RPC.** viem gives up on an attempt after 10 s and retries timeouts and server errors up to 3 times (about 41 s at worst for one request), and a node behind the receipt's block costs a 12-second wait, so a degraded RPC can stretch a round past the 2-minute margin, or push a comparison to the next round.
 - **The `422`'s max sendable amount can be too high** when the amount is at least the balance: the gas then assumed is 21,000, while on Sepolia since Glamsterdam a first transfer to a never-used address costs 204,600. No transaction is affected: the next request estimates the real gas and checks the funds again.
 - **Deposits are not itemized** (see [Deposit handling](#deposit-handling)), and the ledger endpoint returns every row, without pagination (fine at this scale).
@@ -554,10 +561,10 @@ pnpm test
 156 unit tests in 12 files. No network and no secrets: Hardhat's public test mnemonic (`test test … junk`), an in-memory database, and fake chain clients.
 
 - **Wallet generation**: known test vector, determinism, N + m and N − m, range limits, invalid mnemonics, no key material in the output.
-- **Transaction building**: worst-case fee, the exact max sendable amount passes and one wei more fails, sending the whole balance fails.
+- **Transaction building**: worst-case fee, the exact max sendable amount passes and one wei more fails (on fixed inputs), sending the whole balance fails.
 - **Signing**: the address recovered from the signature is the selected wallet, the signed fields match the request, no key material in the output.
 - **Request validation**: exact ETH-to-wei conversion (up to 27 digits), rejected formats (`"1e-3"`, `".5"`, 19 decimals, JSON numbers), address checksums, wallet index range, the sending wallet refused as destination, `broadcast` flag, unknown fields.
-- **Balance tracking**: change detection, database writes, precision above 2⁶³, rollback when a write fails.
+- **Balance tracking**: change detection, database writes, precision above 2⁶³, and rollback when a write fails (a forced `CHECK` failure after the balance update leaves both tables unchanged).
 - **Settlement and poller**: amount + real fee when mined, fee only when reverted; nothing recorded while pending, one outflow once mined, no double count on the next round, a deposit during the pending period recorded afterwards; a node behind the receipt's block read again, with no false inflow; a stale node or a failed read compares nothing.
 - **Balance snapshot**: one Multicall3 call, never split and never a silent failure: the block number first, then one balance per wallet; a missing balance fails the read.
 - **API**: wallet listing; one wallet's ledger in order with exact signed amounts, and `404` for an index that is not watched; `401` without a key or with a wrong one (and no chain call); `400` before any chain call; `422` with the max sendable amount; a transaction signed by the right wallet, and nothing recorded when not broadcast; with broadcast, `202` and a pending withdrawal but no ledger row yet, `409` when pending or not polled, and `502` records nothing.
